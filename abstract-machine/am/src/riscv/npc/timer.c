@@ -23,7 +23,7 @@ void __am_timer_uptime(AM_TIMER_UPTIME_T *uptime) {
         l  = read_csr(CSR_MCYCLE);   // 读 CSR 低位
 
    uint64_t time=((uint64_t)h)<<32|(uint64_t)l;
-   uptime->us = (time)/(2); //- boot_time;
+   uptime->us = (time)/(5); //- boot_time;
 }
 
 void __am_timer_rtc(AM_TIMER_RTC_T *rtc) {

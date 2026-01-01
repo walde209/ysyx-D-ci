@@ -1,7 +1,7 @@
 all:
 	@echo "Write this Makefile by your self."
 WORK_DIR  = $(shell pwd)
-VSRCS = $(shell find ./vsrc -name "*.v" -or -name "*.sv")
+VSRCS = $(shell find . -name "*.v" -or -name "*.sv")
 VSRCS += $(shell find ../ysyxSoC/perip -name "*.v")
 VSRCS += ../ysyxSoC/ready-to-run/D-stage/ysyxSoCFull.v
 CSRCS = $(shell find ./csrc -name "*.c" -or -name "*.cc" -or -name "*.cpp")
