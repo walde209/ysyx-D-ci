@@ -2,13 +2,13 @@ all:
 	@echo "Write this Makefile by your self."
 WORK_DIR  = $(shell pwd)
 VSRCS = $(shell find . -name "*.v" -or -name "*.sv")
-VSRCS += $(shell find ../ysyxSoC/perip -name "*.v")
-VSRCS += ../ysyxSoC/ready-to-run/D-stage/ysyxSoCFull.v
+VSRCS += $(shell find ../patch/ysyxSoC/perip -name "*.v")
+VSRCS += ../patch/ysyxSoC/ready-to-run/D-stage/ysyxSoCFull.v
 CSRCS = $(shell find ./csrc -name "*.c" -or -name "*.cc" -or -name "*.cpp")
 INC_PATH += $(WORK_DIR)/csrc/include
 INCFLAGS += $(addprefix -I, $(INC_PATH))
 
-INC_PATH_VER += ../ysyxSoC/perip/uart16550/rtl ../ysyxSoC/perip/spi/rtl
+INC_PATH_VER += ../patch/ysyxSoC/perip/uart16550/rtl ../patch/ysyxSoC/perip/spi/rtl
 INCFLAGS_VER += $(foreach v,$(INC_PATH_VER),-I$(v))
 
 #CXXFLAGS += $(shell llvm-config --cxxflags) -fPIE
@@ -32,7 +32,7 @@ sim:
     $(CSRCS) $(VSRCS) \
 	$(LIB) $(FLAGS)
  
- IMG ?= /home/zjt/npc-test-ci/ysyx-workbench/ysyxSoC/ready-to-run/D-stage/new.bin
+ IMG ?= /home/zjt/npc-test-ci/ysyx-workbench/ysyxSoC/ready-to-run/D-stage/hello-minirv-ysyxsoc.bin
 
 run: sim
 	$(EX_CMD) $(ARGS) $(IMG)
