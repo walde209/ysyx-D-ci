@@ -46,7 +46,7 @@ $(IMAGE_BIN): $(IMAGE).elf $(HELLO_TEMPLATE)
 image: $(IMAGE_BIN)
 	@$(OBJDUMP) -d $(IMAGE).elf > $(IMAGE).txt
 run: insert-arg
-	echo "TODO: add command here to run simulation"
+	$(MAKE) -C $(YSYX_HOME)/npc run IMG=$(IMAGE_BIN)
 
 .PHONY: insert-arg
 
