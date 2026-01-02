@@ -32,7 +32,7 @@ sim:
     $(CSRCS) $(VSRCS) \
 	$(LIB) $(FLAGS)
  
- IMG ?= /home/zjt/npc-test-ci/ysyx-workbench/ysyxSoC/ready-to-run/D-stage/new.bin
+ IMG ?= /home/zjt/npc-test-ci/ysyx-workbench/am-kernels/tests/cpu-tests/build/dummy-minirv-npc.bin
 
 run: sim
 	$(EX_CMD) $(ARGS) $(IMG)
@@ -40,7 +40,7 @@ run: sim
 	#rm waveform.vcd
 
 IVL_TOP_MODULE ?= tb
-IVL_SRC_VER = $(shell find ./vsrc -name "*.v" -or -name "*.sv")
+IVL_SRC_VER = ysyx_25080202.v
 IVL_SRC_TB = $(shell find ./testbench -name "*.v")
 IVL_SRC  = $(IVL_SRC_VER) $(IVL_SRC_TB)
 VVP_FILE   = sim.vvp

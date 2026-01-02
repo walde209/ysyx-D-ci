@@ -293,7 +293,7 @@ module ysyx_25080202_IFU(
             ifu_state    <= IFU_IDLE;
             inst         <= 32'h0; // NOP
             ifu_valid <= 1'b0;
-            ifu_raddr <= 32'h30000000;
+            ifu_raddr <= 32'h80000000;
             ifu_reqValid <= 1'b0;
             //ifu_wen <=1'b0;
         end else begin
@@ -470,7 +470,7 @@ module ysyx_25080202_PC (
 );
     always @(posedge clk) begin
         if (rst) begin
-            pc <= 32'h30000000;  // 起始地址
+            pc <= 32'h80000000;  // 起始地址
             pc_valid <= 1;
         end
         else if (wbu_valid) begin
