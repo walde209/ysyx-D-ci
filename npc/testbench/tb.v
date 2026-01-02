@@ -15,7 +15,7 @@ module tb;
   end
 
   // -------------------------- 2. 合并内存定义（8位宽，IFU/LSU共享） --------------------------
-  localparam MEM_BASE     = 32'h80000000;  // 统一内存基址
+  localparam MEM_BASE     = 32'h30000000;  // 统一内存基址
   localparam MEM_SIZE_B   = 1024*1024;         
   reg [7:0]  mem [0:MEM_SIZE_B-1];         // 8位宽字节数组（物理内存本质）
 
@@ -105,8 +105,11 @@ always @(posedge clock) begin
         // 模拟串口输出字符（$write不换行，贴合串口输出特性）
         $write("%c", putch_char);
         // 可选：打印调试信息，方便排查
-        $display("[UART][%0t] 输出字符: '%c' (ASCII=0x%02x)", $time, putch_char, putch_char);
+        // $display("[UART][%0t] 输出字符: '%c' (ASCII=0x%02x)", $time, putch_char, putch_char);
         io_lsu_respValid <= 1'b1;  // 串口写操作响应
+      end
+      else if(((io_lsu_addr == SERIAL_PORT+32'd3 && io_lsu_wen)||(io_lsu_addr == SERIAL_PORT+32'd1 && io_lsu_wen))) begin
+        io_lsu_respValid <= 1'b1;
       end
       // 原有逻辑：普通内存访问（保留>>2的地址计算）
       else if ((io_lsu_addr >= MEM_BASE) && (io_lsu_addr < MEM_BASE + MEM_SIZE_B)) begin
@@ -132,13 +135,14 @@ always @(posedge clock) begin
           //          $time, io_lsu_addr, {mem[addr_lsu+3], mem[addr_lsu+2], mem[addr_lsu+1], mem[addr_lsu]}, io_lsu_size);
         end
       end else begin
-        io_lsu_rdata     <= 32'hdeadbeef;  // 地址越界
-        io_lsu_respValid <= 1'b1;
-        $display("[LSU][%0t] Req: addr=0x%08h → Out of range", $time, io_lsu_addr);
+          io_lsu_rdata     <= 32'hdeadbeef;  // 地址越界
+          io_lsu_respValid <= 1'b1;
+          $display("[LSU][%0t] Req: addr=0x%08h → Out of range", $time, io_lsu_addr);
       end
     end
   end
 end
+
 
   // -------------------------- 6. 例化CPU顶层（100%匹配端口） --------------------------
   ysyx_25080202 u_cpu_top (
@@ -176,9 +180,9 @@ end
 
   // -------------------------- 7. 波形导出（调试用） --------------------------
   initial begin
-    $dumpfile("wave.vcd");
-    $dumpvars(0, tb);                // 导出TB所有信号
-    $dumpvars(1, u_cpu_top);         // 导出CPU顶层所有信号
+    // $dumpfile("wave.vcd");
+    // $dumpvars(0, tb);                // 导出TB所有信号
+    // $dumpvars(1, u_cpu_top);         // 导出CPU顶层所有信号
     // $dumpvars(2, mem[0:31]);         // 导出前32字节内存（方便调试）
   end
 

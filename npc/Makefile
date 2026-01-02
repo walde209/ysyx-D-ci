@@ -58,9 +58,9 @@ sim-iverilog:
 	@echo "编译完成，生成文件：$(VVP_FILE)"
 	@echo "========== 执行四值仿真 =========="
 	vvp $(VVP_FLAGS) $(VVP_FILE)
-	@echo "仿真完成，生成波形文件：$(VCD_FILE)"
-	@echo "========== 打开波形文件 =========="
-	gtkwave $(VCD_FILE) 
+# 	@echo "仿真完成，生成波形文件：$(VCD_FILE)"
+# 	@echo "========== 打开波形文件 =========="
+# 	gtkwave $(VCD_FILE) 
  
 clean:
 	rm -rf obj_dir
