@@ -14,25 +14,14 @@ LDSCRIPTS += $(AM_HOME)/scripts/linker.ld
 IVERILOG ?= n
 ifeq ($(IVERILOG), y)
     LDFLAGS += --defsym=_pmem_start=0x30000000 --defsym=_entry_offset=0x0
+    image: image-dep
+	@$(OBJDUMP) -d $(IMAGE).elf > $(IMAGE).txt
+	@echo + OBJCOPY "->" $(IMAGE_REL).bin
+	@$(OBJCOPY) -S --set-section-flags .bss=alloc,contents -O binary $(IMAGE).elf $(IMAGE).bin
+
 else
     LDFLAGS += --defsym=_pmem_start=0x80000000 --defsym=_entry_offset=0x0
-endif
-
-LDFLAGS   += --gc-sections -e _start
-
-MAINARGS_MAX_LEN = 64
-MAINARGS_PLACEHOLDER = t
-CFLAGS += -DMAINARGS_MAX_LEN=$(MAINARGS_MAX_LEN) -DMAINARGS_PLACEHOLDER=$(MAINARGS_PLACEHOLDER)
-CFLAGS += -I$(AM_HOME)/am/src/riscv/npc/include #$(shell pkg-config --cflags sdl2)
-
-insert-arg: image
-	@python $(AM_HOME)/tools/insert-arg.py $(IMAGE).bin $(MAINARGS_MAX_LEN) $(MAINARGS_PLACEHOLDER) "$(mainargs)"
-
-# image: image-dep
-# 	@$(OBJDUMP) -d $(IMAGE).elf > $(IMAGE).txt
-# 	@echo + OBJCOPY "->" $(IMAGE_REL).bin
-# 	@$(OBJCOPY) -S --set-section-flags .bss=alloc,contents -O binary $(IMAGE).elf $(IMAGE).bin
-# 偏移量换算成 10 进制，dd 只认 10 进制
+    # 偏移量换算成 10 进制，dd 只认 10 进制
 
 ELF_OFFSET := 370432
 
@@ -52,6 +41,19 @@ $(IMAGE_BIN): $(IMAGE).elf $(HELLO_TEMPLATE)
 # 如果你还想保留反汇编，可以保留原来的 image 目标
 image: $(IMAGE_BIN)
 	@$(OBJDUMP) -d $(IMAGE).elf > $(IMAGE).txt
+endif
+
+LDFLAGS   += --gc-sections -e _start
+
+MAINARGS_MAX_LEN = 64
+MAINARGS_PLACEHOLDER = t
+CFLAGS += -DMAINARGS_MAX_LEN=$(MAINARGS_MAX_LEN) -DMAINARGS_PLACEHOLDER=$(MAINARGS_PLACEHOLDER)
+CFLAGS += -I$(AM_HOME)/am/src/riscv/npc/include #$(shell pkg-config --cflags sdl2)
+
+insert-arg: image
+#	@python $(AM_HOME)/tools/insert-arg.py $(IMAGE).bin $(MAINARGS_MAX_LEN) $(MAINARGS_PLACEHOLDER) "$(mainargs)"
+
+
 run: insert-arg
 	$(MAKE) -C $(YSYX_HOME)/npc run IMG=$(IMAGE_BIN)
 
