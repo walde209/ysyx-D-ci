@@ -1,119 +1,3 @@
-// #include "sim.h"
-// unsigned int pc;
-// unsigned int next_pc;
-// bool first=true;
-// bool one_flag = false;
-// NPCState npc_state = { .state = NPC_STOP };
-// unsigned long g_nr_guest_inst = 0;
-// static unsigned long g_timer = 0; // unit: us
-// void set_npc_state(int state, unsigned int pc, int halt_ret) {
-//   npc_state.state = state;
-//   npc_state.halt_pc = pc;
-//   npc_state.halt_ret = halt_ret;
-// }
-// // char logbuf[128];
-// void execute_once(){
-//     dut->clock=1;
-// 		dut->eval();
-// 		#ifdef TRACE
-// 		m_trace->dump(sim_time);
-// 		#endif
-// 		sim_time++;
-
-//     get_reg(&Reg,pc); 
-//     // if(difftest_flag&&!first){difftest_step(pc,next_pc);}
-//     // first=false;
-//     // if(wtrace_flag){check_watchpoint();}
-
-
-//     // if(ftrace_flag){
-//     //   if(((dut->trace_inst&(0x0000007f))==111)&&(((dut->trace_inst>>7)&(0x0000001f))==1)){call_func(dut->trace_pc,dut->trace_npc);}
-//     //   if(((dut->trace_inst&(0x0000707f))==103)&&(((dut->trace_inst>>7)&(0x0000001f))==1)){call_func(dut->trace_pc,dut->trace_npc);}
-//     //   else if(((dut->trace_inst&(0x0000707f))==103)&&(((dut->trace_inst>>7)&(0x0000001f))==0)&&(((dut->trace_inst>>15)&(0x1f))==1)){ret_func(dut->trace_pc);}
-//     // }
-//     g_nr_guest_inst++;
-//     if(dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__wbu_valid==1){
-//       one_flag = true;
-//       if(dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__inst == 0x00100073)
-//       {
-//         set_npc_state(NPC_END,dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__PC,Reg.gpr[10]);
-//         printf("\nsim over please input \"q\" to quit\n\n");
-//         return;
-//       }
-//       pc=dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__PC;
-//       if(itrace_flag){
-//       printf("current pc:0x%08x,inst:0x%08x\n",dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__PC,dut->rootp->ysyxSoCFull__DOT__asic__DOT__cpu__DOT__cpu__DOT__inst);
-//       }
-      
-
-//     }
-//     dut->clock=0;           //execute ones
-//     dut->eval();
-//     #ifdef TRACE
-//     m_trace->dump(sim_time);
-//     #endif
-//     sim_time++;
-    
-//     // next_pc=dut->trace_npc;
-// }
-// void reset(int num){
-//   for(int i = 0;i<num;i++){
-//     dut->clock^=1;
-//     dut->reset=1;
-//     dut->eval();
-//     #ifdef TRACE
-//     m_trace->dump(sim_time);
-//     #endif
-//     sim_time++;
-//   }
-//     dut->reset=0;
-  
-// }
-
-// static void statistic() {
-//   Log("host time spent = %lu us", g_timer);
-//   Log("total guest instructions = %lu" , g_nr_guest_inst);
-//   if (g_timer > 0) Log("simulation frequency = %lu inst/s", g_nr_guest_inst * 1000000 / g_timer);
-//   else Log("Finish running in less than 1 us and can not calculate the simulation frequency");
-// }
-
-// void cpu_exec(unsigned long num){
-
-//    switch (npc_state.state) {
-//     case NPC_END: case NPC_ABORT:
-//       printf("Program execution has ended. To restart the program, exit NEMU and run again.\n");
-//       return;
-//     default: npc_state.state = NPC_RUNNING;
-//   }
-
-//   unsigned long timer_start = get_time();
-
-// 	for(int i=0;i<num;i++){
-//     while(!one_flag){execute_once();}
-//     one_flag = false;
-// 		execute_once();
-//     // if(dut->flag==1){break;}
-//     if(npc_state.state!=NPC_RUNNING){break;}
-// 	}
-
-//   unsigned long timer_end = get_time();
-//   g_timer += timer_end - timer_start;
-
-//   switch (npc_state.state) {
-//     case NPC_RUNNING: npc_state.state = NPC_STOP; break;
-
-//     case NPC_END: case NPC_ABORT:
-//       Log("npc: %s at pc = 0x%08x" ,
-//           (npc_state.state == NPC_ABORT ? ANSI_FMT("ABORT", ANSI_FG_RED) :
-//            (npc_state.halt_ret == 0 ? ANSI_FMT("HIT GOOD TRAP", ANSI_FG_GREEN) :
-//             ANSI_FMT("HIT BAD TRAP", ANSI_FG_RED))),
-//           npc_state.halt_pc);
-//           //if(npc_state.state != NPC_ABORT&&npc_state.halt_ret!=0){puts(buf);}
-//           //puts(buf);
-//       // fall through
-//     case NPC_QUIT: statistic();
-//   }
-// }
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -220,17 +104,16 @@ void check_trap(VysyxSoCFull* top) {
 char cmd_buf[128];
 int main(int argc, char** argv, char** env) {
     const char* image_path = argv[1];
-    unsigned int last_pc=0;
     flash_init(image_path);
     printf("argc = %d\n", argc);
     for (int i = 0; i < argc; i++) {
         printf("argv[%d] = %s\n", i, argv[i]);
     }
-//    printf("MAINARGS = %s\n",MAINARGS);
+   // printf("MAINARGS = %s\n",MAINARGS);
     // init_disasm();
-    itrace_fp = fopen("/home/cosin/Desktop/ysyx-workbench/npc/npc-log.txt", "w");
-    printf("itrace_fp = %p\n", (void *)itrace_fp); 
-    assert(itrace_fp);
+    //itrace_fp = fopen("/home/huang/ysyx-workbench/am-kernels/tests/cpu-tests/build/npc-log.txt", "w");
+    //printf("itrace_fp = %p\n", (void *)itrace_fp); 
+    //assert(itrace_fp);
     VerilatedContext* contextp = new VerilatedContext;
     contextp->commandArgs(argc, argv);
     VysyxSoCFull* top = new VysyxSoCFull{contextp};//创建一个Vtop实例，Vtop是你的顶层Verilog模块的C++表示。contextp是Verilator上下文对象，用于管理仿真。   
@@ -303,6 +186,43 @@ int main(int argc, char** argv, char** env) {
     //         check_trap(top);
     //     }else if(strcmp(cmd_buf,"c") == 0)
     //     {
+    //         while(!simulation_finished){
+
+    //             // char disasm_output [128];
+    //             // uint32_t inst = top->inst;
+    //             // uint8_t code[4];
+    //             // code[0] = inst & 0xff;
+    //             // code[1] = (inst >> 8) & 0xff;
+    //             // code[2] = (inst >> 16) & 0xff;
+    //             // code[3] = (inst >> 24) & 0xff;
+    //             // disassemble(disasm_output,sizeof(disasm_output),top->PC,code,4);
+    //             // printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
+    //             // fprintf(itrace_fp, "0x%08x: 0x%08x %s\n", top->PC, top->inst, disasm_output);
+    //             // fflush(itrace_fp);
+    //             //log_mem_access(top);
+    //             single_step(top,contextp);//,tfp);
+    //         }
+    //         check_trap(top);
+    //     }else if(strcmp(cmd_buf,"info r") == 0) {
+    //         //printf("PC = 0x%08x\n", top->PC);
+    //         scan_registers();            
+    //     }else if (strncmp(cmd_buf,"x",1)==0)
+    //     {
+    //         int N =0;
+    //         uint32_t addr =0;
+    //         if(sscanf(cmd_buf,"x %d %x",&N,&addr) == 2) {
+    //             for(int i =0;i<N;i++){
+    //                 uint32_t cur_addr = addr + i*4;
+    //                 uint32_t data = pmem_read(cur_addr);
+    //                 printf("0x%08x: 0x%08x\n", cur_addr, data);
+    //             }
+    //         }else {
+    //             printf("Usage: x N ADDR\n");
+    //         }
+    //     } else {
+    //         printf("Unknown command: %s\n", cmd_buf);
+    //     }
+    // }
             while(!simulation_finished){
 
                 // char disasm_output [128];
@@ -313,36 +233,14 @@ int main(int argc, char** argv, char** env) {
                 // code[2] = (inst >> 16) & 0xff;
                 // code[3] = (inst >> 24) & 0xff;
                 // disassemble(disasm_output,sizeof(disasm_output),top->PC,code,4);
-                // //printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
-                // if((last_pc!=top->PC) &&(top->PC>= 0x80000000)){
+                // printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
                 // fprintf(itrace_fp, "0x%08x: 0x%08x %s\n", top->PC, top->inst, disasm_output);
-                // last_pc=top->PC;
-                // }
                 // fflush(itrace_fp);
-                // // log_mem_access(top);
+                //log_mem_access(top);
                 single_step(top,contextp);//,tfp);
             }
-        //     check_trap(top);
-        // }else if(strcmp(cmd_buf,"info r") == 0) {
-        //     //printf("PC = 0x%08x\n", top->PC);
-        //     scan_registers();            
-        // }else if (strncmp(cmd_buf,"x",1)==0)
-        // {
-        //     int N =0;
-        //     uint32_t addr =0;
-        //     if(sscanf(cmd_buf,"x %d %x",&N,&addr) == 2) {
-        //         for(int i =0;i<N;i++){
-        //             uint32_t cur_addr = addr + i*4;
-        //             uint32_t data = pmem_read(cur_addr);
-        //             printf("0x%08x: 0x%08x\n", cur_addr, data);
-        //         }
-        //     }else {
-        //         printf("Usage: x N ADDR\n");
-        //     }
-        // } else {
-        //     printf("Unknown command: %s\n", cmd_buf);
-        // }
-    // }
+            check_trap(top);
+
     //fclose(itrace_fp);
     printf("Total cycles: %llu\n", (unsigned long long)count);//计算周期数用的，可删
     delete top;
