@@ -1684,8 +1684,8 @@ module ysyx_25080202(
     ysyx_25080202_IFU ifu (
         .clk(clock),
         .rst(reset),
-        .PC(PC),
-        .inst(inst),
+        // .PC(PC),
+        // .inst(inst),
         .pc_valid(pc_valid),
         .wbu_ready(wbu_ready),
         .ifu_valid(ifu_valid),
