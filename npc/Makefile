@@ -40,7 +40,7 @@ run: sim
 	#rm waveform.vcd
 
 IVL_TOP_MODULE ?= tb
-IVL_SRC_VER = /home/cosin/Desktop/ysyx-D-ci/npc/ysyx_25080202.v
+IVL_SRC_VER = $(YSYX_HOME)/npc/ysyx_25080202.v
 IVL_SRC_TB = $(shell find ./testbench -name "*.v")
 IVL_SRC  = $(IVL_SRC_VER) $(IVL_SRC_TB)
 IVL_SRC_NET = $(NETLIST)  $(CELLS) $(IVL_SRC_TB)
