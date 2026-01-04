@@ -1622,8 +1622,8 @@ module ysyx_25080202(
     output [3:0]  io_lsu_wmask,
     output [1:0]  io_lsu_size,
 
-    output [31:0] PC,
-    output [31:0] inst
+    // output [31:0] PC,
+    // output [31:0] inst
 
 );
     // ===============================
@@ -1699,7 +1699,7 @@ module ysyx_25080202(
 
 
     wire [31:0] load_wdata;
-    `ifndef __ICARUS__
+    `ifdef VERILATOR
     import "DPI-C" function void notify_ebreak();
     always @(posedge clock) begin
         if (I_ebreak && $time > 0) begin
