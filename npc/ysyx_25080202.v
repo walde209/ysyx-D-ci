@@ -760,7 +760,7 @@ module ysyx_25080202(
 
 
     wire [31:0] load_wdata;
-    // `ifdef VERILATOR
+    `ifdef VERILATOR
     import "DPI-C" function void notify_ebreak();
     always @(posedge clock) begin
         if (I_ebreak && $time > 0) begin
@@ -768,7 +768,7 @@ module ysyx_25080202(
             notify_ebreak();
         end
     end
-    // `endif
+    `endif
 
     ysyx_25080202_PC pc(
         .clk(clock),
