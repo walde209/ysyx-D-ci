@@ -262,8 +262,9 @@ module ysyx_24090015_EXU#(
 
 			casez (inst_in)
 					32'h00100073:begin
+`ifdef VERILATOR
         notify_ebreak();
-
+`endif 
 
 					end
 					32'b???????_?????_?????_000_?????_00100_11: begin //addi II
@@ -1579,7 +1580,7 @@ endmodule
 
 `timescale 1ns/1ns
 
-module ysyx_25080202#(
+module ysyx_24090015#(
   parameter DATAWIDTH=32,
   parameter ADDRWIDTH=32
   ) (
