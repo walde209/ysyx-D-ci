@@ -1,1133 +1,861 @@
-module ysyx_25080202 (
-    input  clock,
-    input  reset,
-    output reg [31:0] io_ifu_addr,
-    output reg        io_ifu_reqValid,
-    input  [31:0] io_ifu_rdata,
-    input         io_ifu_respValid,
-
-    output  [31:0] io_lsu_addr,
-    output reg        io_lsu_reqValid,
-    input [31:0] io_lsu_rdata,
-    input         io_lsu_respValid,
-    output  [1:0]  io_lsu_size,
-    output reg        io_lsu_wen,
-    output reg [31:0] io_lsu_wdata,
-    output reg [3:0]  io_lsu_wmask
-); 
-
-
-  wire [31:0]next_pc;      // 下一条指令的 PC，由 WBU 产生
-
-
-  wire [31:0]inst_out;     // IFU 输出的指令（传给 IDU）
-
-  wire [31:0]imm;          // 立即数解码结果（IDU -> EXU）
-  wire [3:0]rd;            // 写回寄存器号（IDU -> WBU）
-  wire [3:0]rs1;           // 源寄存器号（IDU -> RegisterFile）
-
-  wire [3:0]rs2;
-
-  wire [2:0]func;          // 功能码（IDU -> EXU）
-  wire [6:0]func7;
-  wire [6:0]opcode;        // 操作码（IDU -> EXU）
-  wire Reg_write;          // 写使能信号（IDU -> WBU/RegFile）
-  wire Jal_en;
-  wire Jump_en;
-  wire add_alu;
-  wire ls_vaild;   //访存
-  wire w_ram;
-  wire is_load_type;
-  wire is_lbu_type;
-  wire is_lw_type;
-  wire is_sb_type;
-  wire is_sh_type;
-  wire is_branch;
-  wire is_lh_type;
-  wire is_lhu_type;
-  wire load_wait; // load指令等待信号
-
-  wire [31:0]rs1_data;     // 源寄存器数据（RegisterFile -> EXU）
-  wire [31:0]rs2_data;
-  wire [31:0]alu_result;   // ALU 计算结果（EXU -> WBU）
-  wire [31:0]alu_ram;
-  wire [31:0]rdata_ram;
-  wire branch_taken;
-  wire [31:0]branch_target;
-
-  wire wb_wen;             // 写回使能（WBU -> RegisterFile）
-  wire [31:0] wb_Rresult;  // 写回数据（WBU -> RegisterFile）
-  wire [3:0] wb_rd;        // 写回寄存器号（WBU -> RegisterFile）
-  wire csr_write;         // 是否为CSR寄存器写入
-
-  reg [31:0] pc_reg;       //保存当前 PC值,实现顺序执行和跳转
-  reg [31:0] pc;
-  always @(*) begin
-    pc = pc_reg;      //pc_reg的“输出端口”
-  end
-  //assign pc[31:0] = pc_reg;      //pc_reg的“输出端口”
-
-  //================LSU======================
-  reg        lsu_done; //访存完成标志
-  wire        LSU_WAIT;
-  //================LSU======================
-
-//================CSR======================
-  reg [63:0] mcycle;//cycle计数器
-  reg [63:0] wbu_mcycle;//wbu cycle mcycle需要用一个中间变量暂存,然后在顶层模块赋值
-  reg [31:0] mvendorid = 32'h79737978;//ysyx 32'h79737978
-  reg [31:0] marchid = 32'h25080201;//STUDENT_ID 32'h017EB189 32'd2025080201
-  reg [63:0] alu_csr; // csr读出数据
-//================CSR======================
-  
-  always @(posedge clock) begin//or posedge reset
-    
-    if (reset)begin
-      //pc <= 32'h30000000;
-      pc_reg <= 32'h30000000;
-      mcycle <= 0;
-    end else if(csr_write && io_ifu_respValid && !ls_vaild) begin
-      mcycle <= wbu_mcycle;
-      pc_reg <= next_pc; 
-      // 只有在没有load等待、且指令有效时才允许更新PC
-    end else if(io_ifu_respValid && !(ls_vaild)) begin //load指令外的普通指令PC更新,防止译码延迟
-    //同时也能预防译码的延迟，因为此时load相关的信号为0
-      pc_reg <= next_pc;
-      mcycle <= mcycle + 1;
-    end else if (lsu_done) begin//load,store指令的PC更新 防止读取内存延迟 
-    //即使译码延迟也没关系，因为两周期的指令，在第二个周期译码和lsu_done同时为1
-        pc_reg <= next_pc;
-        mcycle <= mcycle + 1;
-    end
-    
-  end
-
-
-  //取指
-  ysyx_25080201_IFU IFU_init(
-    .clock(clock),
-    .reset(reset),
-    .pc(pc),
-    .io_ifu_rdata(io_ifu_rdata),//存储器发送的数据
-    .load_wait(load_wait),// load指令等待信号
-    .io_ifu_respValid(io_ifu_respValid),//译码准备好
-    .LSU_WAIT(LSU_WAIT),
-    .lsu_done(lsu_done),
-    .ls_vaild(ls_vaild),
-
-
-    .io_ifu_addr(io_ifu_addr),//请求读存储器地址 pc
-    .inst_out(inst_out),//输出指令
-    .io_ifu_reqValid(io_ifu_reqValid)
-  );
-  //译码
-  ysyx_25080201_IDU IDU_init(
-  .inst_ym(inst_out),//inst_out
-
-  .IDU_imm(imm),//
-  .IDU_rd(rd),
-  .IDU_rs1(rs1),
-  .IDU_rs2(rs2),
-  .IDU_func(func),
-  .IDU_func7(func7),
-  .IDU_opcode(opcode),
-  .Reg_write(Reg_write),
-  .Jal_en(Jal_en),
-  .Jump_en(Jump_en),
-  .add_alu(add_alu),
-  .ls_vaild(ls_vaild),   //访存
-  .w_ram(w_ram),          //访存
-  .is_load_type(is_load_type),
-  .is_lbu_type(is_lbu_type),  //字节区分
-  .is_lw_type(is_lw_type),    //字区分
-  .is_sb_type (is_sb_type),
-  .is_sh_type(is_sh_type),
-  .is_branch(is_branch),
-  .is_lh_type(is_lh_type),
-  .is_lhu_type(is_lhu_type),
-  .csr_write(csr_write)
-
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-
-//ALU算术逻辑单元
-  ysyx_25080201_EXU EXU_init(
-  .pc(pc),
-  .imm_alu(imm),//imm
-  .rs1_alu(rs1_data),//x[rs1]
-  .rs2_alu(rs2_data),//x[rs2]
-  .alu_src(add_alu),
-  .func_alu(func),
-  .func7_alu(func7),
-  .opcode_alu(opcode),
-  .is_branch(is_branch),
-  .mcycle(mcycle),           // cycle计数器
-  .csr_write(csr_write),
-
-  .alu_result(alu_result), //output
-  .alu_ram(alu_ram),
-  .branch_taken(branch_taken),
-  .branch_target(branch_target),
-  .alu_csr(alu_csr)
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-
-//访存
-  ysyx_25080201_LSU LSU_init(
-    .clock(clock),
-    .reset(reset),
-
-    .io_lsu_rdata(io_lsu_rdata),//从MEM中读取数据->rdata_ram
-
-    .valid(ls_vaild),         // 是否有访存请求
-    .wen_ram(w_ram),          // 是否是写入
-    .raddr_ram(alu_ram),      // 读地址lw,lbu????????
-    .waddr_ram(alu_ram),      // 写地址?????
-    .wdata_ram(rs2_data),     // 要写入的数据 from gpr
-    .is_sb_type(is_sb_type),  // 写掩码
-    .is_sh_type(is_sh_type),
-
-    .rdata_ram(rdata_ram),     // out读取内存内容
-
-    .io_lsu_respValid(io_lsu_respValid),//MEM返回给 CPU (LSU)      告诉 CPU：“我已经把你要的数据准备好了，现在你可以用 rdata/结果了！”
-    .io_lsu_reqValid(io_lsu_reqValid),//发给存储器（MEM）    告诉存储器：“我现在真的有一个读/写请求了，请你处理！”
-    .lsu_done(lsu_done), //访存完成标志
-    .io_ifu_respValid(io_ifu_respValid),
-
-    .io_lsu_addr(io_lsu_addr), //读地址
-    .io_lsu_wen(io_lsu_wen),
-    .io_lsu_wdata(io_lsu_wdata),
-    .io_lsu_wmask(io_lsu_wmask),//写掩码
-    .io_lsu_size(io_lsu_size),
-
-    .load_wait(load_wait),
-    .LSU_WAIT(LSU_WAIT)
-);
-
-
-
-//写入寄存器，更新PC
-  ysyx_25080201_WBU WBU_init (
-  // .clock(clock),
-  // .reset(reset),
-  .pc(pc_reg),
-  .alu_data(alu_result),//从alu中读取数据
-  .alu_addr(alu_ram[1:0]),// 读地址lw,lbu--------------------alu_ram[31:0]
-  .ram_data(rdata_ram),//从ram中读取数据
-  .waddr(rd),          //往rd中写入
-  .reg_en(Reg_write),
-  .Jal_en(Jal_en),
-  .jalr_en(Jump_en),
-
-  .is_lbu_type(is_lbu_type),
-  .is_lw_type(is_lw_type),
-  .is_branch(is_branch),
-  .is_lh_type(is_lh_type),
-  .is_lhu_type(is_lhu_type),
-  .csr_write(csr_write),
-  .csr_addr(imm[11:0]), // csr address
-  .rs1_data(rs1_data), // csr write data
-  .mcycle(mcycle),
-  .mvendorid(mvendorid),
-  .marchid(marchid),
-
-  .load_wait(load_wait),
-
-  .alu_csr(alu_csr),  // csr读出数据
-  .func(func),
-
-  .wb_wen(wb_wen),//  output  wb_wen = reg_en
-  .wb_rd(wb_rd),
-  .wb_Rresult(wb_Rresult),//写回到寄存器的数据来自ALU,RAM
-  .next_pc(next_pc),
-  .branch_taken(branch_taken),
-  .branch_target(branch_target),
-  .wbu_mcycle(wbu_mcycle)
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-
-  ysyx_25080201_RegisterFile RegisterFile_init(
-  .clock(clock),
-  .pc(pc),
-  .rs1(rs1),
-  .rs2(rs2),
-  .reg_wdata(wb_Rresult),     // 写入ALU,RAM数据
-  .reg_waddr(wb_rd),          // 写入地址rd
-  .wen(wb_wen && ((is_load_type && io_lsu_respValid) || (!is_load_type && io_ifu_respValid))),               // 写使能
-  .io_ifu_rdata(io_ifu_rdata),
-  .lsu_done(lsu_done),
-  
-  .rs1_data(rs1_data),
-  .rs2_data(rs2_data)
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-
-  
-endmodule
-
-
-//===============================  IFU  ===========================
-module ysyx_25080201_IFU (
-  input clock,
-  input reset,
-  input [31:0] pc,
-  input [31:0] io_ifu_rdata,//LSU->
-  input load_wait,
-  input io_ifu_respValid,//MEM->IFU
-  input LSU_WAIT,
-  input lsu_done,
-  input ls_vaild,
-
-  output reg [31:0] io_ifu_addr,//->raddr temp from pc
-  output reg [31:0] inst_out,//->IDU temp from rdata
-  output reg io_ifu_reqValid//IFU->MEM
-
-  //此处直接用了MEM输出的数据，没有传给IFU，因为clock会延迟一拍
-  //地址同理，直接把PC输入给MEM
-);
-
-  localparam IDLE = 1'b0;
-  localparam WAIT = 1'b1;
-
-  reg state;
-
-  always @(*) begin
-    io_ifu_addr = pc;
-    inst_out = io_ifu_rdata;
-  end
-
-
-  always @(posedge clock) begin//
-    if (reset) begin
-      state <= IDLE;
-      io_ifu_reqValid <= 0;
-    end else begin
-      case (state)
-        IDLE: begin
-            // idle_hold生效，进入WAIT  第一周期不译码
-            io_ifu_reqValid <= 1;
-            state <= WAIT;
-
-
-        end
-        WAIT: begin
-          io_ifu_reqValid <= 0;//防止连续请求
-          if (io_ifu_respValid) begin
-              if (!ls_vaild) begin//此时为第二周期 (load_wait || LSU_WAIT)防止延迟 but time logger
-                state <= IDLE;
-            end else begin// 只有 lsu_done==1 才能转IDLE
-                state <= WAIT;
-            end
-          end else if(!io_ifu_respValid && (load_wait || LSU_WAIT)) begin// 只有 lsu_done==1 才能转IDLE
-                if (lsu_done) begin//防止延迟
-                  state <= IDLE;
-                end
-            end else begin
-              state <= WAIT;//继续等待
-            end
-
-        end
-      endcase
-    end
-  end
-endmodule
-//===============================  IFU  ===========================
-
-
-//===============================  IDU  ===========================
-//译码
-module ysyx_25080201_IDU (
-  input [31:0]inst_ym,
-
-  output reg [31:0]IDU_imm,
-  output reg [3:0]IDU_rd,
-  output reg [3:0]IDU_rs1,
-  output reg [3:0]IDU_rs2,
-  output reg [2:0]IDU_func,
-  output reg [6:0]IDU_func7,
-  output reg [6:0]IDU_opcode,
-  output reg Reg_write,         // 是否写回寄存器
-  output reg Jal_en,
-  output reg Jump_en,
-  output reg add_alu,
-  output reg ls_vaild,          // 是否为访存指令（load/store）
-  output reg w_ram,             // 是否访问RAM（load/store写使能）
-  output reg is_load_type,      // 是否为load类型指令（用于WBU选择写回数据）,区分alu_result和alu_RAM
-  output reg is_lbu_type,        //字节区分
-  output reg is_lw_type,        //字区分
-  output reg is_sb_type,
-  output reg is_sh_type,
-  output reg is_branch,
-  output reg is_lh_type,
-  output reg is_lhu_type,
-  output reg csr_write         // 是否为CSR寄存器写入
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-
-  always @(*) begin
-    // 默认初始化所有信号，防止锁存器
-    IDU_imm      = 32'b0;
-    IDU_rd       = 4'b0;
-    IDU_rs1      = 4'b0;
-    IDU_rs2      = 4'b0;
-    IDU_func     = 3'b0;
-    IDU_opcode   = 7'b0;
-    IDU_func7    = 7'b0;
-    Reg_write    = 0;
-    Jal_en       = 0;
-    Jump_en      = 0;
-    add_alu      = 1;
-    ls_vaild     = 0;
-    w_ram        = 0;
-    is_load_type = 0;
-    is_lbu_type  = 0;
-    is_lw_type   = 0;
-    is_sb_type   = 0;
-    is_sh_type   = 0;
-    is_branch    = 0;
-    is_lh_type   = 0;
-    is_lhu_type  = 0;
-    csr_write    = 0;
-
-      // 指令类型译码与控制信号生成
-      case (inst_ym[6:0])
-        // I-type: addi, lw, lbu, jalr, sltiu ,srai,andi,xori,srli
-        7'b0010011, 7'b0000011, 7'b1100111: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = inst_ym[14:12];
-          IDU_rs1    = inst_ym[18:15];
-          IDU_rd     = inst_ym[10:7];
-          IDU_imm    = { {20{inst_ym[31]}}, inst_ym[31:20] };
-
-          if (inst_ym[6:0] == 7'b0010011) begin // addi
-            if (inst_ym[14:12] == 3'b000) begin
-              Reg_write = 1;
-              add_alu   = 1;
-              //$display("addi");
-            end
-            else if (inst_ym[14:12] == 3'b111) begin//andi
-              Reg_write = 1;
-              add_alu   = 1;
-              //$display("andi");
-            end
-            else if(inst_ym[14:12] == 3'b011)begin //sltiu
-              Reg_write = 1;
-              //$display("sltiu");
-            end
-            else if(inst_ym[14:12] == 3'b101)begin//srai
-              Reg_write = 1;
-              IDU_func7    =  inst_ym[31:25];
-              //$display("srai");
-            end
-            else if(inst_ym[14:12] == 3'b100)begin//xori
-              Reg_write = 1;
-            end
-            else if(inst_ym[14:12] == 3'b101)begin//srli
-              Reg_write = 1;
-              IDU_func7    =  inst_ym[31:25];
-            end
-            else if(inst_ym[14:12] == 3'b001)begin//slli
-              Reg_write = 1;
-              IDU_func7    =  inst_ym[31:25];
-            end
-          end
-
-          else if (inst_ym[6:0] == 7'b1100111) begin // jalr
-            if (inst_ym[14:12] == 3'b000) begin
-              Reg_write = 1;
-              Jump_en   = 1;
-              //$display("jalr");
-            end
-          end
-
-          else if (inst_ym[6:0] == 7'b0000011) begin // load
-            Reg_write    = 1;
-            is_load_type = 1;
-            if (inst_ym[14:12] == 3'b010) begin // lw
-              ls_vaild = 1;
-              w_ram    = 0;
-              is_lw_type = 1;
-              //$display("lw");
-            end else if (inst_ym[14:12] == 3'b100) begin // lbu
-              ls_vaild    = 1;
-              w_ram       = 0;
-              is_lbu_type = 1;
-              //$display("lbu");
-            end else if (inst_ym[14:12] == 3'b001) begin // lh
-              ls_vaild    = 1;
-              w_ram       = 0;
-              is_lh_type  = 1;
-            end else if (inst_ym[14:12] == 3'b101) begin // lhu
-              ls_vaild    = 1;
-              w_ram       = 0;
-              is_lhu_type  = 1;
-            end
-
-          end
-        end
-
-        // R-type: add,sub,sll
-        7'b0110011: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = inst_ym[14:12];
-          IDU_rs1    = inst_ym[18:15];
-          IDU_rs2    = inst_ym[23:20];
-          IDU_rd     = inst_ym[10:7];
-          IDU_imm    = 32'b0;
-          IDU_func7  = inst_ym[31:25];
-
-          if (inst_ym[14:12] == 3'b000) begin // func3
-            if(IDU_func7 == 7'b0000000) begin // func7 add
-              Reg_write = 1;
-              add_alu   = 0;
-            end
-            else if (IDU_func7 == 7'b0100000) begin// func7 sub
-              Reg_write = 1;
-              add_alu   = 0;
-            end
-          end
-          else if(IDU_func == 3'b001)begin//sll
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b111)begin//and
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b011)begin//sltu 7 0
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b110)begin//or 7 0
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b100)begin//xor 7 0
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b010)begin//slt 7 0
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-          else if(IDU_func == 3'b101)begin//sra 7 0100000  srl
-            Reg_write = 1;
-            add_alu   = 0;
-          end
-        end
-
-
-        // U-type: lui
-        7'b0110111: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = 3'b0;
-          IDU_rs1    = 4'b0;
-          IDU_rs2    = 4'b0;
-          IDU_rd     = inst_ym[10:7];
-          IDU_imm    = { inst_ym[31:12], 12'b0 }; // U-type立即数左移12位
-          Reg_write  = 1;
-        end
-
-        // U-type: auipc
-        7'b0010111: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = 3'b0;
-          IDU_rs1    = 4'b0;
-          IDU_rs2    = 4'b0;
-          IDU_rd     = inst_ym[10:7];
-          IDU_imm    = { inst_ym[31:12], 12'b0 }; // U-type立即数左移12位
-          Reg_write  = 1;
-        end
-
-        // B-type: beq(beqz),bne,bgeu  这里我没用区分bne和beq
-        7'b1100011: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = inst_ym[14:12];
-          IDU_rs1    = inst_ym[18:15];
-          IDU_rs2    = inst_ym[23:20];
-          IDU_rd     = 4'b0;
-          IDU_imm    = { {20{inst_ym[31]}},inst_ym[7], inst_ym[30:25], inst_ym[11:8],1'b0}; // B-type offset
-
-          add_alu   = 0;
-          is_branch = 1;
-        end
-
-        // J-type: jal
-        7'b1101111: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = 3'b0;
-          IDU_rs1    = 4'b0;
-          IDU_rs2    = 4'b0;
-          IDU_rd     = inst_ym[10:7];
-          IDU_imm    = { {12{inst_ym[31]}}, inst_ym[19:12], inst_ym[20] , inst_ym[30:21],1'b0}; // J-type offset
-          Reg_write  = 1;
-          Jal_en   = 1;
-        end
-
-        // S-type: sw, sb
-        7'b0100011: begin
-          IDU_opcode = inst_ym[6:0];
-          IDU_func   = inst_ym[14:12];
-          IDU_rs1    = inst_ym[18:15];
-          IDU_rs2    = inst_ym[23:20];
-          IDU_rd     = 4'b0;
-          IDU_imm    = { {20{inst_ym[31]}}, inst_ym[31:25], inst_ym[11:7] };
-          Reg_write  = 0;
-          if (inst_ym[14:12] == 3'b010) begin // sw
-            ls_vaild = 1;
-            w_ram    = 1;
-          end else if (inst_ym[14:12] == 3'b000) begin // sb
-            ls_vaild    = 1;
-            w_ram       = 1;
-            is_sb_type  = 1;
-          end else if (inst_ym[14:12] == 3'b001) begin // sh
-            ls_vaild    = 1;
-            w_ram       = 1;
-            is_sh_type  = 1;
-          end
-
-        end
-
-        7'b1110011: begin//特权指令csrrw
-          if(inst_ym[14:12] == 3'b001)begin
-            IDU_opcode = inst_ym[6:0];
-            IDU_func   = inst_ym[14:12];
-            IDU_rs1    = inst_ym[18:15];
-            IDU_rd     = inst_ym[10:7];
-            IDU_imm    = { {20{inst_ym[31]}}, inst_ym[31:20] };//csr地址
-            Reg_write  = 1;
-            csr_write  = 1;
-          end else if(inst_ym[14:12] == 3'b010)begin//csrrs
-            IDU_opcode = inst_ym[6:0];
-            IDU_func   = inst_ym[14:12];
-            IDU_rs1    = inst_ym[18:15];
-            IDU_rd     = inst_ym[10:7];
-            IDU_imm    = { {20{inst_ym[31]}}, inst_ym[31:20] };//csr地址
-            Reg_write  = 1;
-            csr_write  = 1;
-          end
-            //$display("csrrw");
-          
-        
-          else begin
-          
-            Reg_write  = 0;
-            csr_write  = 0;
-          end
-        end
-
-        default: begin
-          //$display("2.Unknown/illegal io_ifu_respValid: %d instruction: %08x at pc=%08x", io_ifu_respValid,inst_ym, pc);
-              IDU_imm      = 32'b0;
-              IDU_rd       = 4'b0;
-              IDU_rs1      = 4'b0;
-              IDU_rs2      = 4'b0;
-              IDU_func     = 3'b0;
-              IDU_opcode   = 7'b0;
-              IDU_func7    = 7'b0;
-              Reg_write    = 0;
-              Jal_en       = 0;
-              Jump_en      = 0;
-              add_alu      = 1;
-              ls_vaild     = 0;
-              w_ram        = 0;
-              is_load_type = 0;
-              is_lbu_type  = 0;
-              is_lw_type   = 0;
-              is_sb_type   = 0;
-              is_sh_type   = 0;
-              is_branch    = 0;
-              is_lh_type   = 0;
-              is_lhu_type  = 0;
-              csr_write    = 0;
-        end
-      endcase
-    end
-endmodule
-
-//===============================  IDU  ===========================
-
-
-//===============================  EXU  ===========================
-//ALU算术逻辑单元
-module ysyx_25080201_EXU (
-  input [31:0]pc,
-  input [31:0]imm_alu,        // 立即数（I型/S型/U型等）或无效
-  input [31:0]rs1_alu,
-  input [31:0]rs2_alu,        // R型时有效，其它时无效
-  input [2:0]func_alu,
-  input [6:0]func7_alu,
-  input [6:0]opcode_alu,
-  input alu_src,              // 1: imm_alu, 0: rs2_alu
-  input is_branch,
-  input [63:0]mcycle,           // cycle计数器
-  input csr_write,
-
-  output reg [31:0]alu_result,// 寄存器写回
-  output reg [31:0]alu_ram,    // 访存地址
-  output reg branch_taken,
-  output reg [31:0]branch_target,
-  output reg [63:0]alu_csr   // csr读出数据
-  //注意去掉逗号！！！！！！！！！！！！！！
-);
-  // 选择ALU第二操作数
-  wire  [31:0]in2_alu = alu_src ? imm_alu : rs2_alu;
-  always @(*) begin
-    alu_result = 32'b0;
-    alu_ram = 32'b0;
-    branch_taken = 1'b0;         
-    branch_target = 32'b0;
-    alu_csr = 64'b0;     
-    //$display("opcode_alu = %07b,func_alu=%03b,alu_result=%08x,rs1_alu=%08x,in2_alu=%08x| pc = %08x\n",opcode_alu,func_alu,alu_result,rs1_alu,in2_alu,pc);
-    case (opcode_alu)
-    
-      7'b0010011: begin // I型算术（如 addi sltiu andi）
-        if (func_alu == 3'b000)
-          alu_result = rs1_alu + in2_alu;//addi
-        else if(func_alu == 3'b011)
-          alu_result = (rs1_alu < in2_alu) ? 32'd1 : 32'd0;//sltiu
-        else if(func_alu == 3'b101 && func7_alu == 7'b0100000)
-          alu_result = rs1_alu >>> imm_alu[4:0];// srai
-          //$display("opcode_alu = %07b,func_alu=%03b,alu_result=%08x,rs1_alu=%08x,imm_alu[4:0]=%05b| pc = %08x\n",opcode_alu,func_alu,alu_result,rs1_alu,imm_alu[4:0],pc);
-        else if(func_alu == 3'b111)
-          alu_result = rs1_alu & in2_alu; //andi
-        else if(func_alu == 3'b100)
-          alu_result = rs1_alu ^ imm_alu;//xori
-        else if(func_alu == 3'b101 && func7_alu == 7'b0000000)
-          alu_result = rs1_alu >> imm_alu[4:0];//srli
-        else if(func_alu == 3'b001 && func7_alu == 7'b0000000)
-          alu_result = rs1_alu << imm_alu[4:0];//slli
-        else begin
-          alu_result = 32'b0;
-        end
-      end
-
-      7'b0110011: begin // R型算术（如 add sub sll）
-      case (func_alu)
-        3'b000: begin
-          if (func7_alu == 7'b0000000)
-            alu_result = rs1_alu + in2_alu;// add
-          else if(func7_alu == 7'b0100000)
-            alu_result = rs1_alu - in2_alu;// sub
-          //$display("alu_result(%08x) = rs1_alu(%08x) + in2_alu(%08x) | pc = %08x",alu_result,rs1_alu,in2_alu,pc);
-        end
-        3'b001:begin
-          if(func7_alu == 7'b0000000)
-            alu_result = rs1_alu << in2_alu[4:0];//sll
-            //$display("opcode_alu = %07b,func_alu=%03b,alu_result=%08x,rs1_alu=%08x,in2_alu[4:0]=%05b| pc = %08x\n",opcode_alu,func_alu,alu_result,rs1_alu,in2_alu[4:0],pc);
-        end
-        3'b111: alu_result = rs1_alu & in2_alu;//and
-        3'b011: alu_result = ( rs1_alu < in2_alu) ? 1 : 0;//sltu
-        3'b110: alu_result = rs1_alu | in2_alu ;//or
-        3'b100: alu_result = rs1_alu ^ in2_alu ;//xor
-        3'b010: alu_result = ( rs1_alu < in2_alu ) ? 1 : 0;//slt
-        3'b101: begin
-          if(func7_alu == 7'b0100000) alu_result = ( rs1_alu >>> in2_alu );//sra
-          else if(func7_alu == 7'b0000000) alu_result = ( rs1_alu >> in2_alu[4:0] );//srl
-        end
-        
-        
-        default: alu_result = 32'b0;
-      endcase
-      end
-
-      7'b1101111: begin // jal
-        alu_result = pc + in2_alu; //rs1 + signed-offset
-        //$display("alu_result(%08x) = rs1_alu(%08x) + in2_alu(%08x)\n",alu_result,pc,in2_alu);
-      end
-
-      7'b1100111: begin // jalr
-        alu_result = rs1_alu + in2_alu;
-      end
-
-      7'b0000011: begin // load（如 lw,lbu,lh）
-        if(func_alu == 3'b010 || func_alu == 3'b100 || func_alu == 3'b001 || func_alu == 3'b101 )begin
-          alu_ram = rs1_alu + in2_alu;
-        end
-      end
-
-      7'b0100011: begin // store（如 sb,sw,sh）
-        if(func_alu == 3'b010 || func_alu == 3'b000 || func_alu == 3'b001)begin
-          alu_ram = rs1_alu + in2_alu;
-        end
-      end
-
-      7'b0110111: begin // lui
-        alu_result = in2_alu;
-      end
-
-      7'b0010111:begin // auipc
-        alu_result = pc + in2_alu;
-      end
-
-      7'b1100011:begin // 分支指令 B-type
-        if (is_branch) begin
-          case (func_alu)
-            3'b000: branch_taken = (rs1_alu == in2_alu);// beq
-            3'b001: branch_taken = (rs1_alu != in2_alu);//bne
-            3'b111: branch_taken = (rs1_alu >= in2_alu );//bgeu
-            3'b110: branch_taken = (rs1_alu < in2_alu );//bltu
-            3'b101: branch_taken = (rs1_alu >= in2_alu );//bge
-            3'b100: branch_taken = (rs1_alu < in2_alu );//blt
-            default: ;
-          endcase
-          branch_target = pc + imm_alu;
-        end
-        else begin
-          branch_taken = 1'b0;//??????????????
-        end
-      end
-
-      7'b1110011: begin // csrrw
-        if(csr_write && func_alu == 3'b001)begin
-          case (imm_alu[11:0])
-            12'hB00: alu_result = mcycle[31:0]; // mcycle
-            12'hB80: alu_result = mcycle[63:32]; // mcycleh
-            12'hF11, 12'hF12: ;  // 只读 CSR，不允许写
-            default: ;
-          endcase
-        end else if (csr_write && func_alu == 3'b010 )begin//csrrs
-          alu_csr = mcycle;
-          case (imm_alu[11:0])
-            12'hF11, 12'hF12: ; // 只读 CSR
-            12'hB00: begin
-              alu_result = mcycle[31:0];
-              if(rs1_alu != 0)begin
-                alu_csr = {mcycle[63:32],mcycle[31:0] | rs1_alu }; // mcycle
-              end 
-              else begin
-                alu_csr = mcycle;//?????????????????????????????????????
-              end
-            end
-            12'hB80: begin
-              alu_result = mcycle[63:32];
-              if(rs1_alu != 0)begin
-                alu_csr = {mcycle[63:32] | rs1_alu , mcycle[31:0]}; // mcycleh
-              end
-              else begin
-                alu_csr = mcycle;//?????????????????????????????????????
-              end
-            end
-            default: alu_result = 32'b0;
-          endcase
-        end
-        else 
-          alu_result = 32'b0;
-      end
-
-      default: alu_result = 32'b0;
-    endcase
-    end
-endmodule
-
-//===============================  EXU  ===========================
-
-
-
-
-//===============================  LSU  ===========================
-module ysyx_25080201_LSU (
+/* verilator lint_off DECLFILENAME */
+module ysyx_25080202(
     input clock,
     input reset,
-    input  [31:0] io_lsu_rdata,
-    //=============================原
-    input valid,              // 是否有访存请求  ym
-    input wen_ram,                // 是否是写入 ym Write_enable
-    input [31:0]raddr_ram,        // 读地址EXU io_lsu_addr
-    input [31:0]waddr_ram,        // 写地址EXU io_lsu_addr
-    input [31:0]wdata_ram,        //  要写入的数据gpr 
-    //=============================原
-    input is_sb_type,
-    input is_sh_type,
+    
+    output io_ifu_reqValid,
+    output [31:0]io_ifu_addr,
     input io_ifu_respValid,
-
-    input reg io_lsu_respValid,//存储器响应有效（数据已准备好）
-    output reg io_lsu_reqValid,//访存请求有效 发给存储器（MEM）
-    output reg lsu_done, //访存完成标志 （通知下游模块）
-
-    output reg [31:0]rdata_ram, // 读出的数据 (返回给EXU/WBU) load 
-    output [31:0] io_lsu_addr,
-    output reg       io_lsu_wen,//=============================================
-    output reg [31:0] io_lsu_wdata,// 写入存储器的数据 组合逻辑
-    output reg [ 3:0] io_lsu_wmask,
-    output [ 1:0] io_lsu_size,
-
-    output reg load_wait, // load指令等待信号
-    output reg LSU_WAIT
+    input [31:0]io_ifu_rdata,
+    output io_lsu_reqValid,
+    output [31:0]io_lsu_addr,
+    output [1:0]io_lsu_size,
+    output io_lsu_wen,
+    output [31:0]io_lsu_wdata,
+    output [3:0]io_lsu_wmask,
+    input io_lsu_respValid,
+    input [31:0]io_lsu_rdata
 );
+
+    /* verilator lint_off WIDTHTRUNC */
+    `ifdef VERILATOR
+    // import "DPI-C" function byte unsigned pmem_read_ram(input int unsigned raddr);
+    // import "DPI-C" function int pmem_read_rom(input int raddr);
+    // export "DPI-C" function trap;
+    // function int trap();
+    //     return is_ebreak?1:0;
+    // endfunction
+    import "DPI-C" function void notify_ebreak();
+always @(posedge clock) begin
+    if (is_ebreak && $time > 0) begin
+        notify_ebreak();
+    end
+end
     
-    localparam IDLE = 1'b0;// 空闲状态：等待访存请求（上游发来 valid=1）
-    localparam WAIT = 1'b1;// 等待状态：等待数据返回（respValid=1），只有访存请求发出后才进入
-    reg state;
+    // export "DPI-C" function get_pc;
+    // function int get_pc();
+    //     get_pc = pc_data_out;
+    // endfunction
+    `endif
+    wire [31:0]pc_data_in;
+    wire [31:0]pc_data_out;
+    wire [31:0]decode;
+    wire [31:0]snpc;
+    wire [31:0]dnpc;
+    wire [31:0]dnpc1;
+    wire [3:0]raddr1;
+    wire [3:0]raddr2;
+    wire [31:0]src1;
+    wire [31:0]src2;
+    wire [3:0]waddr;
+    wire [31:0]wdata;
+    wire [5:0]fetch;
+    wire [31:0]mtvec;
+    wire [31:0]mepc;
+    wire [31:0]csr_rdata;
+    wire [11:0]csr_rkey;
+    wire [2:0]csr_mask;
+    // wire [31:0]r1;
+    wire [31:0]mcycle;
+    wire [31:0]mcycleh;
+    wire [31:0]lsu_addr;
+    wire [31:0]lsu_rdata;
+    wire lsu_ren;
+    wire lsu_wen;
+    wire [31:0]lsu_wdata;
+    wire [31:0]lsu_wmask;
+    wire lsu_rready;
+    wire is_isa_raise_intr;
+    wire is_cpu_wen;
+    wire is_mret;
+    wire csr_wen;
+    wire is_jalr;
+    wire gpr_wen;
+    wire is_ebreak;
+    wire [31:0]wbu_wdata;
+    wire rready;
+    wire [1:0]addr_off;
+    assign is_jalr = (fetch == 6'b011111||fetch == 6'b100000||
+    fetch == 6'b100001||fetch == 6'b100010||fetch == 6'b100100||
+    fetch == 6'b100011||fetch == 6'b000001||fetch == 6'b000010||
+    fetch == 6'b100111||fetch == 6'b101000)?1:0;
+    assign raddr1 = decode[18:15];
+    assign raddr2 = decode[23:20];
+    assign csr_rkey[11:0] = decode[31:20];
+    assign wbu_wdata = lsu_ren?lsu_rdata:wdata;
+    wire pc_valid;
+    assign pc_valid = (lsu_ren||lsu_wen)?lsu_rready:rready;
+    assign io_ifu_addr = pc_data_out;
+    assign io_lsu_addr = lsu_addr;
+    assign io_lsu_wen = lsu_wen;
+    assign io_lsu_wdata = lsu_wdata<<(8*lsu_addr[1:0]);
+    assign io_lsu_wmask = lsu_wmask<<lsu_addr[1:0];
+    assign addr_off = lsu_addr[1:0];
+    assign dnpc = is_isa_raise_intr?mtvec:(is_mret?mepc:dnpc1);       
+    ysyx_25070194_new_IFU ysyx_25070194_my_ifu(
+        .clock(clock),
+        .reset(reset),
+        .rvalid(io_ifu_respValid),
+        .rready(rready),
+        .arready(io_ifu_reqValid),
+        .rdata(decode),
+        .io_ifu_rdata(io_ifu_rdata),
+        .is_cpu_wen(is_cpu_wen),
+        .lsu_rready(lsu_rready),
+        .lsu_ren(lsu_ren),
+        .lsu_wen(lsu_wen)
+    );
+    ysyx_25070194_mux_32_2 ysyx_25070194_dnpc_mux(
+        .data1(dnpc1),
+        .data2(mtvec),
+        .sel(is_isa_raise_intr),
+        .out(dnpc)
+    );
+    ysyx_25070194_mux_32_2 ysyx_25070194_pc_mux(
+        .data1(snpc),
+        .data2(dnpc),
+        .sel(is_jalr),
+        .out(pc_data_in)
+    );
+    ysyx_25070194_register ysyx_25070194_pc(
+        .clock(clock),
+        .reset(reset),
+        .en(pc_valid),
+        .q(pc_data_out),
+        .p(pc_data_in)
+    );
+    ysyx_25070194_alu ysyx_25070194_decoder(
+        .decode(decode),
+        // .r1(r1),
+        .is_cpu_wen(is_cpu_wen),
+        .pc(pc_data_out),
+        .src1(src1),
+        .src2(src2),
+        .data_out1(wdata),
+        .data_out2(dnpc1),
+        .waddr(waddr),
+        .csr_rdata(csr_rdata),
+        .dnpc(snpc),
+        .fetch(fetch),
+        .is_ebreak(is_ebreak),
+        .is_isa_raise_intr(is_isa_raise_intr),
+        .is_mret(is_mret),
+        .gpr_wen(gpr_wen),
+        .csr_wen(csr_wen),
+        .lsu_addr(lsu_addr),
+        .lsu_ren(lsu_ren),
+        .lsu_wdata(lsu_wdata),
+        .lsu_wen(lsu_wen),
+        .lsu_wmask(lsu_wmask)
+    );
+    ysyx_25070194_LSU ysyx_25070194_my_lsu(
+        .clock(clock),
+        .reset(reset),
+        .lsu_rdata(lsu_rdata),
+        .lsu_wen(lsu_wen),
+        .lsu_ren(lsu_ren),
+        .fetch(fetch),
+        .lsu_rready(lsu_rready),
+        .size(io_lsu_size),
+        .io_lsu_rdata(io_lsu_rdata),
+        .io_lsu_respValid(io_lsu_respValid),
+        .io_lsu_reqValid(io_lsu_reqValid),
+        .addr_off(addr_off)
+    );
+    ysyx_25070194_csr_mux ysyx_25070194_my_csr_mux(
+        .key(csr_rkey),
+        .mask(csr_mask)
+    );
+    ysyx_25070194_RegisterFile #(.ADDR_WIDTH(4),.DATA_WIDTH(32)) ysyx_25070194_gpr(
+        .reset(reset),
+        .clock(clock),
+        .wen(gpr_wen),
+        .wdata(wbu_wdata),
+        .waddr(waddr),
+        .raddr1(raddr1),
+        .raddr2(raddr2),
+        .rdata1(src1),
+        .rdata2(src2)
+        // .r1(r1)
+    );
+    ysyx_25070194_csr ysyx_25070194_my_csr(
+        .reset(reset),
+        .wen(csr_wen),
+        .clock(clock),
+        .is_isa_raise_intr(is_isa_raise_intr),
+        .NO(4'hb),
+        .epc(pc_data_out),
+        .wdata(dnpc1),
+        .waddr(csr_mask),
+        .raddr(csr_mask),
+        .rdata(csr_rdata),
+        .mtvec(mtvec),
+        .mepc(mepc),
+        .mcycle(mcycle),
+        .mcycleh(mcycleh)
+    );
+    ysyx_25070194_mcycle ysyx_25070194_my_mcycle(
+        .clock(clock),
+        .reset(reset),
+        .p(mcycle+1),
+        .q(mcycle)
+    );
+    ysyx_25070194_mcycleh ysyx_25070194_my_mcycleh(
+        .clock(clock),
+        .reset(reset),
+        .low(mcycle),
+        .p(mcycleh+1),
+        .q(mcycleh)
+    );
+endmodule
+module ysyx_25070194_new_IFU(
+    input clock,
+    input reset,
+    input rvalid,
+    input lsu_rready,
+    inout lsu_ren,
+    input lsu_wen,
+    input [31:0]io_ifu_rdata,
+    output reg arready,
+    output rready,
+    output reg is_cpu_wen,
+    output [31:0]rdata
+);
+    // import "DPI-C" function int pmem_read_rom(input int raddr);
+    typedef enum logic [1:0] {
+        IDLE  = 2'b00,
+        WAIT  = 2'b01
+    } state_t;
+    reg is_re_arready;
+    reg is_first_arready;
+    reg [1:0]    curr_state, next_state;                   
+    reg [31:0]   rdata_temp;           
     always @(*) begin
-      LSU_WAIT = (state == WAIT);
-    end
-    //assign LSU_WAIT = (state == WAIT);
-
-    reg [3:0]wmask;
-    reg [31:0] data_ram;
-
-    //assign rdata_ram = io_lsu_respValid ? io_lsu_rdata : 32'b0;
-    // 组合逻辑计算访存地址和写使能
-    assign io_lsu_addr  = wen_ram ? waddr_ram : raddr_ram;
-    assign io_lsu_size  = is_sb_type ? 2'b00 : 
-                         is_sh_type ? 2'b01 : 
-                         2'b10;
-  always @(*) begin
-    io_lsu_wdata = data_ram;
-    wmask = io_lsu_wen ? (
-                  is_sb_type ? (4'b0001 << waddr_ram[1:0]) : 
-                  is_sh_type ? (waddr_ram[1] ? 4'b1100 : 4'b0011) : 
-                  4'b1111
-               ) : 4'b0000;
-    io_lsu_wmask = wmask;
-  end
-    
-    // 组合逻辑计算写入数据
-    always @(*) begin
-        data_ram = 32'b0; 
-        if(is_sb_type)begin//sb
-            case (waddr_ram[1:0])
-                2'b00: data_ram = {24'b0,wdata_ram[7:0]};
-                2'b01: data_ram = {16'b0,wdata_ram[7:0],8'b0};
-                2'b10: data_ram = {8'b0,wdata_ram[7:0],16'b0};
-                2'b11: data_ram = {wdata_ram[7:0],24'b0};
-                default: data_ram =32'b0;
-            endcase
-        end else if (is_sh_type) begin//sh
-            case (waddr_ram[1:0])
-                2'b00: data_ram = {16'b0, wdata_ram[15:0]};
-                2'b10: data_ram = {wdata_ram[15:0], 16'b0};
-                default: data_ram = 32'b0;
-            endcase
-
-        end else begin
-            data_ram = wdata_ram;
-        end
-    end
-    // 状态转移
-    always @(posedge clock) begin
-        if(reset) begin
-            state <= IDLE;
-            io_lsu_reqValid <= 1'b0;
-        end else begin
-            case (state)
-                IDLE: begin
-                    // 读请求进入WAIT，写请求保持IDLE（写单周期完成）
-                    if (valid && io_ifu_respValid) begin//// 读请求
-                        state <= WAIT;
-                        io_lsu_reqValid <= 1'b1; // 发起访存请求
-                    end else begin
-                        state <= IDLE;
-                        io_lsu_reqValid <= 1'b0; // 无访存请求
-                    end
-                end
-                WAIT: begin
-                    // 等待存储器respValid拉高时回到IDLE
-                    if (io_lsu_respValid) begin// 存储器响应
-                        state <= IDLE;
-                    end else begin
-                        state <= WAIT;
-                        io_lsu_reqValid <= 1'b0; // 访存请求已发出
-                    end
-                end
-            endcase
-        end
-    end
-
-    // /输出逻辑 : LSU输出信号控制 
-    always @(*) begin
-        rdata_ram = 32'b0;
-        lsu_done = 1'b0;
-        load_wait = 1'b0;
-        io_lsu_wen = io_lsu_reqValid && wen_ram;//组合逻辑?
-        case (state)
+        is_cpu_wen = 0;
+        // next_state = curr_state;
+        case (curr_state)
             IDLE: begin
-                if (valid) begin
-                    // /io_lsu_reqValid = 1'b1;                // 发起访存请求
-                    load_wait = !wen_ram;               // 读时进入等待
-                    lsu_done = io_lsu_respValid ? 1'b1 : 1'b0;   // 写操作立即完成
+                if(rvalid) begin
+                    next_state = WAIT;
                 end
-                //===================================================================================================
+                else    next_state = IDLE;
+            end
+
+            WAIT: begin
+                if(~(lsu_ren||lsu_wen)||lsu_rready)begin
+                    is_cpu_wen = 1;
+                    next_state = IDLE;
+                end
                 else begin
-                    //io_lsu_reqValid = 1'b0;                // 无访存请求
-                    load_wait = 1'b0;
-                    rdata_ram = 32'b0;
-                    lsu_done = 1'b0;
+                    is_cpu_wen = 0;
+                    next_state = WAIT;
                 end
             end
-            WAIT: begin
-                //io_lsu_reqValid = 1'b0;                // 访存请求已发出
-                if (io_lsu_respValid) begin
-                    load_wait = 1'b0;                     // 读操作等待数据 
-                    rdata_ram = io_lsu_rdata;            // 数据返回，采集结果 load
-                    lsu_done = 1'b1;                   // 访存完成
-                // end else if (valid && wen_ram) begin
-                //     io_lsu_wen = 1'b1;                  // 写操作
-                    
-                end else begin
-                    load_wait = 1'b1;                   //  [延迟]读操作等待数据 load
-                    rdata_ram = 32'b0;
-                    lsu_done = 1'b0;
-                end
-                
+
+            default: begin
+                next_state = IDLE;
             end
         endcase
-    end 
+    end
+    
+    assign rready  = (curr_state == WAIT||reset == 1);
+    assign rdata   = (curr_state == WAIT) ? rdata_temp : 32'd0;
 
+    always @(posedge clock) begin
+        if (reset) begin
+            rdata_temp <= 0;
+            is_first_arready <= 0;
+            curr_state <= IDLE;
+            is_re_arready <= 0;
+            arready <= 0;
+        end
+        else begin
+            arready <= (curr_state == WAIT && is_re_arready 
+            && ~(lsu_ren||lsu_wen) ||~is_first_arready||lsu_rready );
+            is_first_arready <= 1;
+            is_re_arready <= 1;
+            curr_state <= next_state;
+            if (curr_state == IDLE && rvalid) begin
+            rdata_temp <= io_ifu_rdata; 
+            end
+            else if(curr_state == IDLE) begin
+                is_re_arready <= 0;
+            end
+        end 
+    end
 endmodule
-
-//===============================  LSU  ===========================
-
-
-
-//===============================  WBU  ===========================
-
-//写入寄存器，更新PC
-module ysyx_25080201_WBU (
-  input [31:0]pc,
-  input [31:0]alu_data,//从alu中读取数据
-  input [1:0]alu_addr,//从alu中读取的地址 [31:0]alu_addr,
-  input [31:0]ram_data,//从ram中读取数据
-  input [3:0]waddr,
-  input reg_en,
-  input Jal_en,
-  input jalr_en,
-  input is_lbu_type,
-  input is_branch,
-  input is_lh_type,
-  input is_lhu_type,
-  input csr_write,
-  input [11:0] csr_addr, // csr address
-  input [31:0] rs1_data, // csr write data
-  input [63:0] mcycle,           // cycle计数器
-  input [31:0] mvendorid, // ysyx
-  input [31:0] marchid,   // student_ID
-  input load_wait,
-  input is_lw_type,
-  input branch_taken,
-  input [31:0]branch_target,
-  input [63:0] alu_csr,   // csr读出数据
-  input [2:0] func,
-
-  output wb_wen,
-  output [3:0]wb_rd,
-  output [31:0]wb_Rresult,//写回到寄存器的数据来自ALU,RAM
-  output reg [31:0]next_pc,
-  output reg [63:0] wbu_mcycle // cycle计数器
-  //注意去掉逗号！！！！！！！！！！！！！！
+module ysyx_25070194_mux_32_2(
+    input [31:0]data1,
+    input [31:0]data2,
+    input sel,
+    output reg [31:0]out
 );
-  wire [7:0] lbu_byte;
-  wire [15:0] lh_byte;
-  reg [31:0] wb_Rresult_reg;
-
-  //选择器
-  assign lbu_byte =
-    (alu_addr == 2'b00) ? ram_data[7:0] ://////alu_data=0???????
-    (alu_addr == 2'b01) ? ram_data[15:8] :
-    (alu_addr == 2'b10) ? ram_data[23:16] :
-                               ram_data[31:24];
-
-  assign lh_byte =  
-    (alu_addr == 2'b00) ? ram_data[15:0] : 
-    (alu_addr == 2'b10) ? ram_data[31:16] : 16'b0;
-
-  always @(*) begin
-    wb_Rresult_reg = 32'b0;
-    wbu_mcycle     = mcycle;   // 默认不修改 CSR 值
-    if(is_lbu_type)
-      wb_Rresult_reg = {24'b0, lbu_byte} ; //lbu
-    else if(is_lh_type)
-      wb_Rresult_reg = {{16{lh_byte[15]}}, lh_byte} ; //lh  符号扩展
-    else if(is_lhu_type)
-      wb_Rresult_reg = {16'b0, lh_byte} ;//lhu 零扩展
-
-    else if  (jalr_en || Jal_en)
-      wb_Rresult_reg = pc + 32'h4;//jalr jal
-
-    else if(is_lw_type)
-      wb_Rresult_reg = ram_data;//lw
-
-    else if(csr_write)
-      case(csr_addr)
-        12'hB00: begin
-          wb_Rresult_reg = alu_data; // mcycle 读出当前CSR值到rd
-          if(func == 3'b010 && rs1_data != 0)
-              wbu_mcycle = alu_csr;
-          else
-              wbu_mcycle = {mcycle[63:32], rs1_data}; // 低32位写入rs1_data
-        end
-
-        12'hB80: begin
-          wb_Rresult_reg = alu_data; // mcycleh 读出当前CSR值到rd
-          if(func == 3'b010 && rs1_data != 0)
-              wbu_mcycle = alu_csr;
-          else
-              wbu_mcycle = {rs1_data , mcycle[31:0]}; // 高32位写入rs1_data
-        end
-
-        12'hF11: begin
-          wb_Rresult_reg = mvendorid; // mvendorid
-        end
-        12'hF12: begin
-          wb_Rresult_reg = marchid; // marchid
-        end
-        default: wb_Rresult_reg = 32'b0;
-      endcase
-    else 
-      wb_Rresult_reg = alu_data;//add sub addi
-
-    if(is_branch && branch_taken)begin
-      next_pc = branch_target;
+    always@(*)begin
+        case(sel)
+            0:out=data1;
+            1:out=data2;
+        endcase
     end
-
-    else if (jalr_en) begin
-      next_pc = alu_data & 32'hfffffffe;
-    end
-
-    else if (Jal_en) begin
-      next_pc =alu_data;
-    end
-
-    else begin
-      next_pc = pc + 4;
-    end
-  end
-
-  assign wb_Rresult =  wb_Rresult_reg;//区分load指令和普通指令
-  assign wb_wen = load_wait ? 0 : reg_en;//区分load指令和普通指令 wb_wen && ((is_load_type && io_lsu_respValid) || (!is_load_type && io_ifu_respValid))
-  assign wb_rd =  waddr;//区分load指令和普通指令
 endmodule
+module ysyx_25070194_register #(DATA_WIDTH = 32)(
+    input clock,
+    input reset,
+    input en,
+    input [DATA_WIDTH-1:0]p,
+    output reg [DATA_WIDTH-1:0]q
+);
+    always@(posedge clock) begin
+        if(reset) q<=32'h30000000;
+        else if(en)  q<=p;
+    end
+endmodule
+module ysyx_25070194_alu(
+    input [31:0]pc,
+    input [31:0]src1,
+    input [31:0]src2,
+    input [31:0]decode,
+    // input [31:0]r1,
+    input is_cpu_wen,
+    input [31:0]csr_rdata,
+    output reg[31:0]data_out1,
+    output reg[31:0]data_out2,
+    output reg[3:0]waddr,
+    output reg[5:0]fetch,
+    output reg gpr_wen,
+    output reg csr_wen,
+    output reg[31:0]dnpc,
+    output reg is_ebreak,
+    output reg is_isa_raise_intr,
+    output reg is_mret,
+    output reg lsu_ren,
+    output reg lsu_wen,
+    output reg [31:0]lsu_addr,
+    output reg [31:0]lsu_wdata,
+    output reg [31:0]lsu_wmask
+);
+//`define CONFIG_FTRACE 1
+    /* verilator lint_off WIDTHTRUNC */
+    `ifdef VERILATOR
+    // import "DPI-C" function void call_function(input int unsigned pc,input int unsigned dnpc);
+    // import "DPI-C" function void ret_function(input int unsigned pc,input int unsigned dnpc);
+    `endif
+    reg [11:0]imm_i;
+    reg [19:0]imm_u;
+    reg [11:0]imm_s;
+    reg [20:0]imm_j;
+    reg [12:0]imm_b;
+    wire signed [31:0] src1_signed = src1;
+    wire signed [31:0] src2_signed = src2;
+    reg [31:0]imm_i_un;
+    always@(*)begin
+        is_ebreak = 0;
+        is_mret = 0;
+        is_isa_raise_intr = 0;
+        dnpc = pc+4;
+        waddr = decode[10:7];
+        data_out1 = 0;
+        data_out2 = 0;
+        fetch = 0;
+        lsu_addr = 0;
+        lsu_wdata = 0;
+        lsu_wmask = 0;
+        imm_i[11:0] = decode[31:20];
+        imm_u[19:0] = decode[31:12];
+        imm_s[11:0] = {decode[31:25],decode[11:7]};
+        imm_j[20:0] = {decode[31],decode[19:12],decode[20],decode[30:21],1'b0};
+        imm_b[12:0] = {decode[31],decode[7],decode[30:25],decode[11:8],1'b0};
+        lsu_ren = 0;
+        lsu_wen = 0;
+        
+        casez(decode)
 
-//===============================  WBU  ===========================
+//-------------------------------------minirv----------------------------------------------------
 
+            32'bzzzzzzzzzzzzzzzzz000zzzzz0010011:begin//addi
+                fetch = 6'b000000;
+                data_out1 = src1+{{20{imm_i[11]}},imm_i};
+            end
+            32'bzzzzzzzzzzzzzzzzz000zzzzz1100111:begin//jalr
+                fetch = 6'b000001;
+                data_out2 = (src1+{{20{imm_i[11]}},imm_i})&~32'h1;
+                data_out1 = pc+4;
+                `ifdef CONFIG_FTRACE
+                if(waddr == 1) begin
+                    call_function(pc,data_out2);
+                end
+                else if(waddr == 0) begin
+                    ret_function(pc,data_out2);
+                end
+                `endif 
+            end
+            32'bzzzzzzzzzzzzzzzzzzzzzzzzz1101111:begin//jal,j
+                fetch = 6'b000010;
+                data_out1 = pc+4;
+                data_out2 = pc+{{11{imm_j[20]}},imm_j};
+                `ifdef CONFIG_FTRACE
+                if(waddr == 1) begin
+                    call_function(pc,data_out2);
+                end
+                `endif 
+            end
+            32'b0000000zzzzzzzzzz000zzzzz0110011:begin//add
+                fetch = 6'b000011;
+                data_out1 = src1+src2;
+            end
+            32'bzzzzzzzzzzzzzzzzzzzzzzzzz0110111:begin//lui
+                fetch = 6'b000100;
+                data_out1 = imm_u<<12;
+            end
 
-//===============================  RegisterFile  ===========================
-module ysyx_25080201_RegisterFile(
+//--------------------------------------memory-------------------------------------------------
+
+            32'bzzzzzzzzzzzzzzzzz010zzzzz0000011:begin//lw
+                lsu_ren = 1;
+                fetch = 6'b000101;
+                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
+                lsu_wmask = {{28{1'b0}},4'b1111};
+            end
+            32'bzzzzzzzzzzzzzzzzz100zzzzz0000011:begin//lbu
+                lsu_ren = 1;
+                fetch = 6'b000110;
+                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
+                lsu_wmask = {{28{1'b0}},4'b0001};
+            end
+            32'bzzzzzzzzzzzzzzzzz101zzzzz0000011:begin//lhu,i
+                lsu_ren = 1;
+                fetch = 6'b000111;
+                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
+                lsu_wmask = {{28{1'b0}},4'b0011};
+            end
+            32'bzzzzzzzzzzzzzzzzz001zzzzz0000011:begin//lh,i
+                lsu_ren = 1;
+                fetch = 6'b001000;
+                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
+                lsu_wmask = {{28{1'b0}},4'b0011};
+            end
+            32'bzzzzzzzzzzzzzzzzz000zzzzz0000011:begin//lb,i
+                lsu_ren = 1;
+                fetch = 6'b001001;
+                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
+                lsu_wmask = {{28{1'b0}},4'b0001};
+            end
+            32'bzzzzzzzzzzzzzzzzz010zzzzz0100011:begin//sw
+                lsu_wen = 1;
+                fetch = 6'b001010;
+                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
+                lsu_wdata = src2;
+                lsu_wmask = {{28{1'b0}},4'b1111};
+            end
+            32'bzzzzzzzzzzzzzzzzz000zzzzz0100011:begin//sb
+                lsu_wen = 1;
+                fetch = 6'b001011;
+                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
+                lsu_wdata = {{24{1'b0}},src2[7:0]};
+                lsu_wmask = {{28{1'b0}},4'b0001};
+            end
+            32'bzzzzzzzzzzzzzzzzz001zzzzz0100011:begin//sh
+                lsu_wen = 1;
+                fetch = 6'b001100;
+                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
+                lsu_wdata = {{16{1'b0}},src2[15:0]};
+                lsu_wmask = {{28{1'b0}},4'b0011};
+            end
+
+//--------------------------------------other-------------------------------------------------------
+
+            32'b0100000zzzzzzzzzz000zzzzz0110011:begin//sub,r
+                fetch = 6'b001101;
+                data_out1 = src1-src2;
+            end
+            32'bzzzzzzzzzzzzzzzzzzzzzzzzz0010111:begin//auipc,u
+                fetch = 6'b001110;
+                data_out1 = pc+({{12{imm_u[19]}},imm_u}<<12);
+            end
+            32'b0000000zzzzzzzzzz111zzzzz0110011:begin//and,r
+                fetch = 6'b001111;
+                data_out1 = src1&src2;
+            end
+            32'bzzzzzzzzzzzzzzzzz111zzzzz0010011:begin//andi,i
+                fetch = 6'b010000;
+                data_out1 = src1&{{20{imm_i[11]}},imm_i};
+            end
+            32'b0000000zzzzzzzzzz110zzzzz0110011:begin//or,r
+                fetch = 6'b010001;
+                data_out1 = src1|src2;
+            end
+            32'b0000000zzzzzzzzzz100zzzzz0110011:begin//xor,r
+                fetch = 6'b010010;
+                data_out1 = src1^src2;
+            end
+            32'bzzzzzzzzzzzzzzzzz100zzzzz0010011:begin//xori,i
+                fetch = 6'b010011;
+                data_out1 = src1^{{20{imm_i[11]}},imm_i};
+            end
+            32'bzzzzzzzzzzzzzzzzz110zzzzz0010011:begin//ori,i
+                fetch = 6'b010100;
+                data_out1 = src1|{{20{imm_i[11]}},imm_i};
+            end
+
+//-----------------------------------logical move-----------------------------------------------
+
+            32'b0000000zzzzzzzzzz001zzzzz0110011:begin//sll,r
+                fetch = 6'b010101;
+                data_out1 = src1<<src2[4:0];
+            end
+            32'b0000000zzzzzzzzzz101zzzzz0110011:begin//srl,r
+                fetch = 6'b010110;
+                data_out1 = src1>>src2[4:0];
+            end
+            32'b0100000zzzzzzzzzz101zzzzz0110011:begin//sra,r
+                fetch = 6'b010111;
+                data_out1 = src1_signed>>>src2[4:0];
+            end
+            32'b0100000zzzzzzzzzz101zzzzz0010011:begin//srai,i
+                fetch = 6'b011000;
+                data_out1 = src1_signed>>>{{27{1'b0}}, decode[24:20]};
+            end
+            32'b0000000zzzzzzzzzz101zzzzz0010011:begin//srli,i
+                fetch = 6'b011001;
+                data_out1 = src1>>{{27{1'b0}}, decode[24:20]};
+            end
+            32'b0000000zzzzzzzzzz001zzzzz0010011:begin//slli,i
+                fetch = 6'b011010;
+                data_out1 = src1<<{{27{1'b0}}, decode[24:20]};
+            end
+            32'bzzzzzzzzzzzzzzzzz010zzzzz0010011:begin//slti,i,视为补码
+                fetch = 6'b011011;
+                data_out1 = src1_signed<{{20{imm_i[11]}},imm_i}?1:0;
+            end
+            32'b0000000zzzzzzzzzz010zzzzz0110011:begin//slt,r,视为补码
+                fetch = 6'b011100;
+                data_out1 = src1_signed<src2_signed?1:0;
+            end
+            32'b0000000zzzzzzzzzz011zzzzz0110011:begin//sltu,r,视为无符号数
+                fetch = 6'b011101;
+                data_out1 = src1<src2?1:0;
+            end
+            32'bzzzzzzzzzzzzzzzzz011zzzzz0010011:begin//sltiu,i,视为无符号数
+                fetch = 6'b011110;
+                imm_i_un = {{20{imm_i[11]}},imm_i};
+                data_out1 = src1<imm_i_un?1:0;
+            end
+
+//----------------------------------b跳转相关-------------------------------------------------
+
+            32'bzzzzzzzzzzzzzzzzz001zzzzz1100011:begin//bne,b
+                fetch = 6'b011111;
+                if(src1!=src2)begin  
+                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+            32'bzzzzzzzzzzzzzzzzz000zzzzz1100011:begin//beq,b
+                fetch = 6'b100000;
+                if(src1==src2)begin
+                  data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+            32'bzzzzzzzzzzzzzzzzz100zzzzz1100011:begin//blt,b,视为补码
+                fetch = 6'b100001;
+                if(src1_signed<src2_signed)begin
+                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+            32'bzzzzzzzzzzzzzzzzz101zzzzz1100011:begin//bge,b,视为补码
+                fetch = 6'b100010;
+                if(src1_signed>=src2_signed)begin
+                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+            32'bzzzzzzzzzzzzzzzzz110zzzzz1100011:begin//bltu,b,视为无符号数
+                fetch = 6'b100011;
+                if(src1<src2)begin
+                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+            32'bzzzzzzzzzzzzzzzzz111zzzzz1100011:begin//bgeu,b,视为无符号数
+                fetch = 6'b100100;
+                if(src1>=src2)begin
+                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
+                end
+                else begin
+                    data_out2 = dnpc;
+                end
+            end
+//----------------------------------m异常中断-------------------------------------------------
+            32'bzzzzzzzzzzzzzzzzz001zzzzz1110011:begin//csrrw
+                fetch = 6'b100101;
+                data_out1 = csr_rdata;
+                data_out2 = src1;
+            end
+            32'bzzzzzzzzzzzzzzzzz010zzzzz1110011:begin//csrrs
+                fetch = 6'b100110;
+                data_out1 = csr_rdata;
+                data_out2 = csr_rdata|src1;
+            end
+            32'b00000000000000000000000001110011:begin//ecall
+                fetch = 6'b100111;
+                is_isa_raise_intr = 1;
+            end
+            32'b00110000001000000000000001110011:begin//mret
+                fetch = 6'b101000;
+                is_mret = 1;
+            end
+            32'b00000000000100000000000001110011:is_ebreak = 1;
+            default: begin
+                data_out1 = 0;
+                data_out2 = 0;
+                fetch = 0;
+                lsu_addr = 0;
+                lsu_wdata = 0;
+                lsu_wmask = 0;
+            end
+        endcase
+        if(fetch==6'b001010||fetch==6'b001011||fetch==6'b001100||fetch == 6'b011111||
+        fetch == 6'b100011||fetch == 6'b100000||fetch == 6'b100001||fetch == 6'b100010||
+        fetch == 6'b100100||fetch == 6'b100111||fetch == 6'b101000||is_cpu_wen == 0)  gpr_wen = 0;
+        else    gpr_wen = 1;
+        if((fetch == 6'b100101||fetch == 6'b100110)&&is_cpu_wen == 1) begin
+            csr_wen = 1;
+        end
+        else begin
+            csr_wen = 0;
+        end
+    end
+endmodule
+module ysyx_25070194_LSU(
+    input clock,
+    input reset,
+    input lsu_wen,
+    input [5:0]fetch,
+    input [31:0]io_lsu_rdata,
+    input [1:0]addr_off,
+    input io_lsu_respValid,
+    input lsu_ren,
+    output reg lsu_rready,
+    output reg [31:0]lsu_rdata,
+    output reg [1:0]size,
+    output reg io_lsu_reqValid
+);
+`ifdef VERILATOR
+    // import "DPI-C" function byte unsigned pmem_read_ram(input int unsigned raddr);
+    // import "DPI-C" function int pmem_write(
+    // input int unsigned waddr, input int unsigned wdata, input int wmask);
+`endif
+    reg is_first_lsu_rready;
+    reg is_been_alloc;
+    reg [1:0]en_flash;
+    wire [15:0]io_lsu_rdata1;
+    assign io_lsu_rdata1 = io_lsu_rdata>>(addr_off*8);
+    always @(posedge clock) begin
+        en_flash <= {en_flash[0],(lsu_ren||lsu_wen)};
+        is_been_alloc <= ~en_flash[1]&&en_flash[0];
+        case(fetch)
+            6'b000101:size <= 2'b10;
+            6'b000110:size <= 2'b00;
+            6'b000111:size <= 2'b01;
+            6'b001000:size <= 2'b01;
+            6'b001001:size <= 2'b00;
+            6'b001010:size <= 2'b10;
+            6'b001011:size <= 2'b00;
+            6'b001100:size <= 2'b01;
+            default:size <= 2'b00;
+        endcase
+        if (reset) begin
+            lsu_rready <= 1'b0;
+            lsu_rdata  <= 32'b0;
+            is_first_lsu_rready <= 1;
+            io_lsu_reqValid <= 0;
+            is_been_alloc <= 0;
+        end
+        else begin
+            if(io_lsu_reqValid) begin
+                is_first_lsu_rready <= 0;
+            end
+            lsu_rready <= 0;
+            io_lsu_reqValid <= ((lsu_ren||lsu_wen)&&is_been_alloc)||(is_first_lsu_rready&&(lsu_ren||lsu_wen));
+            if(io_lsu_respValid) begin
+                case(fetch)
+                    6'b000101:begin
+                        lsu_rdata <= (!lsu_wen) ? io_lsu_rdata : 32'b0;
+                        lsu_rready <= 1;
+                    end
+                    6'b000110:begin
+                        lsu_rdata <= (!lsu_wen) ? {{24{1'b0}},io_lsu_rdata1[7:0]} : 32'b0;
+                        lsu_rready <= 1;
+                    end
+                    6'b000111:begin
+                        lsu_rdata <= (!lsu_wen) ? {{16{1'b0}},io_lsu_rdata1[15:0]} : 32'b0;
+                        lsu_rready <= 1;
+                    end
+                    6'b001000:begin
+                        lsu_rdata <= (!lsu_wen) ? {{16{io_lsu_rdata1[15]}},io_lsu_rdata1[15:0]} : 32'b0;
+                        lsu_rready <= 1;
+                    end
+                    6'b001001:begin
+                        lsu_rdata <= (!lsu_wen) ? {{24{io_lsu_rdata1[7]}},io_lsu_rdata1[7:0]} : 32'b0;
+                        lsu_rready <= 1;
+                    end
+                    default:begin
+                        lsu_rdata <= 32'b0;
+                        lsu_rready <= 0;
+                    end
+                endcase
+            end
+            if (lsu_wen&&io_lsu_respValid) begin
+                lsu_rready <= 1;
+            end
+        end
+    end
+endmodule
+module ysyx_25070194_csr_mux(
+    input [11:0]key,
+    output reg [2:0]mask
+);
+    always@(*)begin
+        case(key)
+            12'h342:mask=3'b000;//mcause
+            12'h300:mask=3'b001;//mstatus
+            12'h341:mask=3'b010;//mepc
+            12'h305:mask=3'b011;//mtvec
+            12'hb00:mask=3'b100;//mcycle
+            12'hb80:mask=3'b101;//mcycleh
+            12'hf11:mask=3'b110;//mvendorid
+            12'hf12:mask=3'b111;//marchid
+            default:mask=3'b000;
+        endcase
+    end
+endmodule
+module ysyx_25070194_RegisterFile #(ADDR_WIDTH = 5, DATA_WIDTH = 32) (
   input clock,
-  input [31:0]pc,
-  input [3:0]rs1,
-  input [3:0]rs2,
-  input [31:0] reg_wdata,     // 接收要写入的alu|ram数据
-  input [3:0] reg_waddr,      // 接收要写入的地址rd
-  input wen,                  // 写使能
-  input [31:0]io_ifu_rdata,
-  input lsu_done,
-
-  output  [31:0] rs1_data,
-  output  [31:0] rs2_data
+  input reset,
+  input [DATA_WIDTH-1:0] wdata,
+  input [ADDR_WIDTH-1:0] waddr,
+  input [ADDR_WIDTH-1:0] raddr1,
+  input [ADDR_WIDTH-1:0] raddr2,
+  input wen,
+  output [DATA_WIDTH-1:0] rdata1,
+  output [DATA_WIDTH-1:0] rdata2
+//   output reg [DATA_WIDTH-1:0] r1
 );
-  // rf为寄存器数组，大小为16，每个寄存器宽度为32
-  reg[31:0] rf[15:0];
-  // 写操作：时钟上升沿，当wen为1时，将wdata写入waddr对应的寄存器
+  reg [DATA_WIDTH-1:0] rf [2**ADDR_WIDTH-1:0];
+  `ifdef VERILATOR
+//   export "DPI-C" function get_reg;
+//   function int get_reg(input int num);
+//     if(num>5'b11111)  begin 
+//       get_reg = 32'h11451419;
+//     end
+//     else  begin 
+//       get_reg = rf[num];
+//     end
+//   endfunction
+  `endif 
   always @(posedge clock) begin
-    if (lsu_done || (wen && reg_waddr != 0)) begin
-      rf[reg_waddr] <= reg_wdata; // 0号寄存器保护  
+    if(reset) begin
+        rf[0] <= 32'b0;
+        rf[1] <= 32'b0;
+        rf[2] <= 32'b0;
+        rf[3] <= 32'b0;
+        rf[4] <= 32'b0;
+        rf[5] <= 32'b0;
+        rf[6] <= 32'b0;
+        rf[7] <= 32'b0;
+        rf[8] <= 32'b0;
+        rf[9] <= 32'b0;
+        rf[10] <= 32'b0;
+        rf[11] <= 32'b0;
+        rf[12] <= 32'b0;
+        rf[13] <= 32'b0;
+        rf[14] <= 32'b0;
+        rf[15] <= 32'b0;
     end
-
+    else if (wen&&waddr!=0) rf[waddr] <= wdata;
   end
-
-  assign rs1_data = (rs1 == 0) ? 32'b0 : rf[rs1];
-  assign rs2_data = (rs2 == 0) ? 32'b0 : rf[rs2];//如果 rs2 没有用到或者等于 0 号寄存器，输出就是 0
-
+  assign rdata1 = (raddr1==0)?0:rf[raddr1];
+  assign rdata2 = (raddr2==0)?0:rf[raddr2];
+//   assign r1 = rf[1];
+endmodule            
+module ysyx_25070194_csr(
+    input reset,
+    input clock,
+    input wen,
+    input [31:0]epc,
+    input [3:0]NO,
+    input is_isa_raise_intr,
+    input [2:0]raddr,
+    input [2:0]waddr,
+    input [31:0]mcycle,
+    input [31:0]mcycleh,
+    input [31:0]wdata,
+    output [31:0]rdata,
+    output [31:0]mtvec,
+    output [31:0]mepc
+);
+    reg [31:0] csr [6:0];
+    assign rdata = (raddr == 3'd4) ? mcycle : (raddr == 3'd5) ? mcycleh : 
+                   (raddr == 3'd6) ? 32'h79737978: (raddr == 3'd7) ? 32'h17e8a72: csr[raddr];
+    assign mtvec = csr[3];
+    assign mepc = csr[2];
+    always@(posedge clock)begin
+        if(reset)begin
+            csr[0] <= 0;
+            csr[1] <= 0;
+            csr[2] <= 0;
+            csr[3] <= 0;
+            csr[4] <= 0;
+            csr[5] <= 0;
+            csr[6] <= 0;
+        end
+        else if(wen)begin
+            csr[waddr] <= wdata;
+        end
+        else if(is_isa_raise_intr)begin
+            csr[0] <= {{28{1'b0}}, NO};
+            csr[2] <= epc;
+        end
+    end
 endmodule
+module ysyx_25070194_mcycle(
+    input clock,
+    input reset,
+    input [31:0]p,
+    output reg [31:0]q
+);
+    always@(posedge clock)begin
+        if(reset)begin
+            q<=0;
+        end
+        else begin
+            q<=p;
+        end
+    end
+endmodule
+module ysyx_25070194_mcycleh(
+    input reset,
+    input clock,
+    input [31:0]low,
+    input [31:0]p,
+    output reg [31:0]q
+);
+    always@(posedge clock)begin
+        if(reset) q <= 0;
+        else if(low==32'hffffffff)begin
+            q <= p;
+        end
+    end
+endmodule 
+/* verilator lint_on DECLFILENAME */
