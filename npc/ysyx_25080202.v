@@ -182,7 +182,9 @@ assign rdata = CSRS[csr_raddr0];
 endmodule
 
 // import "DPI-C" function void ebreak();
+`ifdef VERILATOR
 import "DPI-C" function void notify_ebreak();
+`endif 
 module ysyx_24090015_EXU#(
 	parameter DATAWIDTH=32,
 	parameter ADDRWIDTH=32

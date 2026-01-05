@@ -27,7 +27,7 @@ sim:
 	
 # 	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
 	@echo $(VSRCS)
-	verilator --trace --cc --exe --build --autoflush $(INCFLAGS_VER) --timescale "1ns/1ns" --no-timing --Wno-WIDTHEXPAND\
+	verilator --trace -Wno-all --cc --exe --build --autoflush $(INCFLAGS_VER) --timescale "1ns/1ns" --no-timing --Wno-WIDTHEXPAND\
     --top-module $(TOP_NAME) \
     $(CSRCS) $(VSRCS) \
 	$(LIB) $(FLAGS)
