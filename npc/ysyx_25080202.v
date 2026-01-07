@@ -1,861 +1,967 @@
-/* verilator lint_off DECLFILENAME */
+module ysyx_25080202_CSR(
+    input clk,
+    input rst,
+    input I_csrrs,
+    input I_csrrw,                    //判断指令是不是 csrrw
+    input [11:0] csr_addr,            // SR 地址 = inst[31:20]
+    input [31:0] csr_wdata,           //要写进CSR的数据
+    output reg [31:0] csr_rdata      //从CSR寄存器读到的数据
+
+);
+
+    reg [63:0] mcycle;
+ 
+
+    localparam [31:0] MVENDORID = 32'h79737978;  // "ysyx"
+    localparam [31:0] MARCHID   = 32'h017EB18A;  // 学号部分
+    //
+    always @(*) begin
+        //csr_rdata = 32'b0;
+        if(I_csrrs||I_csrrw) begin
+        case (csr_addr)
+            12'hB00: csr_rdata = mcycle[31:0];
+            12'hB80: csr_rdata = mcycle[63:32];
+            12'hF11: csr_rdata = MVENDORID;
+            12'hF12: csr_rdata = MARCHID;
+            default: csr_rdata = 32'b0;
+        endcase
+        end else begin
+           csr_rdata = 32'b0;
+        end
+    end
+
+    // ========= 时序逻辑：写 =========
+    always @(posedge clk) begin
+        if (rst) begin
+            mcycle <= 64'b0;
+        end else begin
+            mcycle <= mcycle + 1;
+
+            if (I_csrrw) begin
+                case (csr_addr)
+                    12'hB00: mcycle[31:0] <= csr_wdata;
+                    12'hB80: mcycle[63:32] <= csr_wdata;
+                    12'hF11, 12'hF12: ;  // 只读 CSR，不允许写
+                    default: ;
+                endcase
+            end else if (I_csrrs && csr_wdata != 32'b0) begin
+                case (csr_addr)
+                    12'hB00: mcycle[31:0] <= mcycle[31:0] | csr_wdata;
+                    12'hB80: mcycle[63:32] <= mcycle[63:32] | csr_wdata;
+                    12'hF11, 12'hF12: ;  // 只读 CSR
+                    default: ;
+                endcase
+            end
+        end
+    end
+
+endmodule
+module ysyx_25080202_EXU(
+    input R_TYPE,
+    input I_TYPE,
+    input S_TYPE,
+    input B_TYPE,
+    input J_TYPE,
+    input U_TYPE,
+    input R_add,
+    input I_add,
+    input I_jalr,
+    input l_lbu,
+    input l_lw,
+    input I_csrrw,
+    input I_csrrs,
+    input [31:0] rdata_1,
+    input [31:0] rdata_2,
+    input [31:0] imm,
+    input [31:0] pc,
+    output reg [31:0] csr_wdata,
+    output reg [31:0] ALU_OUT
+);
+    reg [31:0] A;
+    reg [31:0] B;
+
+    always @(*) begin 
+        A = 0;
+        B = 0;
+        ALU_OUT = 0;
+        if(I_csrrw |I_csrrs) begin
+            csr_wdata = rdata_1;
+        end
+        else begin 
+            csr_wdata = 32'b0;
+        end
+
+        if (R_TYPE | I_TYPE | S_TYPE) begin
+            A = rdata_1;
+        end
+        else if (B_TYPE | J_TYPE) begin 
+            A = pc;
+        end
+        else if (U_TYPE) begin 
+            A = 32'b0;
+        end
+
+        if (R_TYPE) begin 
+            B = rdata_2;
+        end 
+        else if (S_TYPE | I_TYPE | B_TYPE | U_TYPE) begin
+            B = imm;
+        end
+
+        if (R_add | I_add | I_jalr | U_TYPE | S_TYPE | l_lbu|l_lw) begin 
+            ALU_OUT = A + B;
+        end else begin
+            ALU_OUT = 0;
+        end
+        // $display("A = 0x%08x\n",A);//debug
+        // $display("B = 0x%08x\n",B);//debug
+        //if(I_jalr) begin     
+          //  $display("ALU_OUT = 0x%08x\n",ALU_OUT);//debug
+        // $display("I_TYPE = %d\n",I_TYPE);//debug
+        //end 
+    end
+    
+endmodule
+module ysyx_25080202_IDU(
+  input [31:0] inst,
+  output reg R_TYPE,
+  output reg I_TYPE_ARITH,
+  output reg L_TYPE_LOAD,
+  output reg S_TYPE,
+  output reg U_TYPE,
+  output reg I_TYPE,
+  output reg MemWEn,
+  output reg B_TYPE,
+  output reg J_TYPE,
+  output reg I_jalr,
+  output reg U_lui,
+  output reg R_add,
+  output reg l_lw,
+  output reg l_lbu,
+  output reg I_add,
+  output reg S_sw,
+  output reg S_sb,
+  output reg I_ebreak,
+  output reg I_csrrw,
+  output reg I_csrrs,
+  output reg [11:0]csr_addr,
+  output reg [31:0] imm,
+  output reg [4:0]r1,
+  output reg [4:0]r2,
+  output reg [4:0]rd,
+  output reg [3:0]wmask
+); 
+  wire [6:0] opcode = inst[6:0];
+  wire [2:0] funct3 = inst[14:12];
+  wire [6:0] funct7 = inst[31:25];
+
+  wire [31:0] immI = {{20{inst[31]}},inst[31:20]};
+  wire [31:0] immS = {{20{inst[31]}},inst[31:25],inst[11:7]};
+  wire [31:0] immB = {{20{inst[31]}},inst[7],inst[30:25],inst[11:8],1'b0};
+  wire [31:0] immU = {inst[31:12],12'b000000000000};
+  wire [31:0] immJ = {{12{inst[31]}},inst[19:12],inst[20],inst[30:21],1'b0};
+  always @(*) begin
+    R_TYPE = 0;
+    I_TYPE_ARITH = 0;
+    L_TYPE_LOAD = 0;
+    S_TYPE = 0;
+    MemWEn = 0;
+    B_TYPE = 0;
+    J_TYPE = 0;
+    I_jalr = 0;
+    U_lui = 0;
+    R_add = 0;
+    l_lw = 0;
+    l_lbu = 0;
+    I_add = 0;
+    S_sw = 0;
+    S_sb = 0;
+    imm = 0;
+    I_TYPE = 0;  
+    U_TYPE = 0;
+    I_csrrw = 0;
+    I_csrrs = 0;
+    wmask = 4'b0;
+    csr_addr = inst[31:20];
+    // $display("CSR read addr = %h", csr_addr);
+    r1 = inst[19:15];
+    r2 = inst[24:20];
+    rd = inst[11:7];
+    // $display("inst: %b", inst);
+    // $display("opcode: %b", opcode);
+    case (opcode)
+        //R_type指令 (add)
+        7'b0110011:begin 
+            R_TYPE = 1;
+            if(funct3 == 3'b000 && funct7 == 7'b0000000) begin 
+                R_add = 1;
+            end 
+        end
+        // I-type算术指令 (addi)//&& funct7 == 7'b0000000
+        7'b0010011:begin
+            I_TYPE_ARITH = 1;
+            if(funct3 == 3'b000) begin 
+                I_add = 1;
+            end
+        end
+        7'b0000011:begin
+            L_TYPE_LOAD = 1;
+            if(funct3 == 3'b010) begin
+                l_lw = 1;//LW
+            end else if(funct3 == 3'b100) begin 
+                l_lbu =1;//LBU
+            end
+        end 
+        7'b0100011:begin
+            S_TYPE = 1;
+            MemWEn = 1;
+            if(funct3 == 3'b010) begin
+                S_sw = 1;//SW
+                wmask = 4'b1111;
+            end
+            if(funct3 == 3'b000) begin 
+                S_sb = 1;//SB
+                wmask =4'b0001;
+            end
+        end
+        7'b1100011:begin
+            B_TYPE = 1;
+        end 
+        7'b1101111:begin
+            J_TYPE = 1;
+        end
+        7'b1100111:begin
+            I_jalr =1;//JALR
+        end
+        7'b0110111:begin
+            U_lui = 1;//LUI
+        end
+        7'b1110011:begin
+            if(funct3 == 3'b001) begin 
+                I_csrrw = 1;
+            end else if(funct3 == 3'b010) begin
+                I_csrrs = 1;
+            end else if(inst[31:7] == 25'b0000000000010000000000000) begin
+                I_ebreak = 1;
+            end
+        end
+        default :begin
+             //$display("Unknown opcode: %d", opcode);
+        end 
+    endcase
+    //$display("addi_TYPE: %b", I_add);//调试
+    I_TYPE = I_TYPE_ARITH | L_TYPE_LOAD | I_jalr;
+    U_TYPE = U_lui;
+    // if(I_csrrw == 1) begin
+    //     $display("IDU: inst=%h opcode=%b I_csrrw=%b csr_addr=%h", inst, opcode, I_csrrw, csr_addr);
+    // end
+    case(1'b1)
+      I_TYPE: imm = immI;
+      S_TYPE: imm = immS;
+      B_TYPE: imm = immB;
+      U_TYPE: imm = immU;
+      J_TYPE: imm = immJ;
+      default: begin
+            imm = 0;
+      end
+    endcase
+
+  end
+
+endmodule
+module ysyx_25080202_IFU(
+    input  clk,
+    input  rst,
+    input  [31:0] PC,
+    input pc_valid,
+    input lsu_ready,
+    input wbu_ready,
+    output reg [31:0] inst,
+    output reg ifu_valid,
+    output reg ifu_wen,
+    output reg        ifu_reqValid,
+    input             ifu_respValid,
+    output reg [31:0] ifu_raddr,
+    input  [31:0]     ifu_rdata
+);
+    localparam IFU_IDLE = 1'b0;
+    localparam IFU_WAIT = 1'b1;
+    reg ifu_state;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            ifu_state    <= IFU_IDLE;
+            inst         <= 32'h0; // NOP
+            ifu_valid <= 1'b0;
+            ifu_raddr <= 32'h30000000;
+            ifu_reqValid <= 1'b0;
+            //ifu_wen <=1'b0;
+        end else begin
+            case (ifu_state)
+                IFU_IDLE: begin
+                    if(pc_valid) begin 
+                        ifu_state <= IFU_WAIT; // 发请求后进入 WAIT
+                        ifu_raddr <= PC;
+                        ifu_reqValid <=1'b1;
+                    end 
+                    else begin 
+                        ifu_state <=IFU_IDLE;
+                        //if(wbu_ready || lsu_ready && ifu_valid) begin
+                        if((wbu_ready || lsu_ready)&& ifu_valid) begin
+                            ifu_valid <= 1'b0;
+                        end
+                    end
+                end
+                IFU_WAIT: begin
+                    if (ifu_reqValid) begin
+                        ifu_reqValid <= 1'b0;
+                    end                    
+                    if (ifu_respValid) begin
+                        ifu_state <= IFU_IDLE;
+                        ifu_valid <= 1'b1;
+                        inst <= ifu_rdata;
+                    end
+                end
+                default :begin
+                    ifu_state <= IFU_IDLE;
+                    end
+            endcase
+        end
+    end
+endmodule
+
+module ysyx_25080202_LSU(
+    input             rst,
+    input             clk,
+    input      [31:0] R2_data,
+    input      [31:0] ALU_OUT,
+    //input      [31:0] PC_plus_4,
+    input             l_lw,
+    input             l_lbu,
+    input             S_sb,
+    input             S_sw,
+    input             R_TYPE,
+    input             I_TYPE_ARITH,
+    input             I_TYPE,
+    input             U_TYPE,
+    input             J_TYPE,
+    input             I_csrrw,
+    input      [31:0] CSR_RDATA,
+    input      [4:0]  rd,
+    input [3:0] wmask,//IDU传进来的
+    // SimpleBus 接口
+    input ifu_valid,
+    input wbu_ready,
+    output reg lsu_valid,
+    output reg lsu_reqValid,
+    input  lsu_respValid,
+    output reg [31:0] lsu_addr,
+    output reg lsu_wen,
+    output reg [31:0] lsu_wdata,
+    output reg [3:0]  lsu_wmask,
+    input  [31:0] lsu_rdata,
+    output reg lsu_ready,
+    output lsu_working,
+    output reg [1:0] io_lsu_size,
+    // 写回寄存器文件
+    output reg [31:0] RegWriteData
+);
+
+    // 状态机
+    localparam LSU_IDLE = 1'b0;
+    localparam LSU_WAIT = 1'b1;
+    reg state;
+
+    // 写数据与掩码（组合逻辑）
+    wire [31:0] deviation_rdata = lsu_rdata >> (lsu_addr[1:0] * 8);
+    // reg [31:0] MemWriteData;
+    //reg [3:0]  wmask;
+
+
+    //assign lsu_addr  = ALU_OUT;
+    wire wen  = S_sb | S_sw;
+    wire ren  = l_lbu|l_lw; 
+    assign lsu_working = ren | wen;
+
+    // 状态迁移（时序逻辑）
+    always @(posedge clk) begin
+        if (rst) begin
+            state        <= LSU_IDLE;
+            lsu_ready    <= 1'b0;
+            lsu_valid    <= 1'b0;
+            lsu_reqValid <= 1'b0;
+            lsu_wen      <= 1'b0;
+            RegWriteData <=32'b0;
+            io_lsu_size <=2'b0;
+        end else begin
+            case (state)
+                LSU_IDLE: begin
+                        if (ifu_valid && (wen || ren)) begin
+                          //$display("[LSU][%0t] REQ: addr=0x%08h wen=%b ren=%b wdata=0x%08h wmask=0x%1h ALU_OUT=0x%08h", 
+         //$time, ALU_OUT, wen, ren, R2_data, wmask, ALU_OUT);
+                          state <= LSU_WAIT;
+                          lsu_ready<=1'b1;
+                          lsu_wen<=wen;
+                          //lsu_wdata<= R2_data;
+                          lsu_addr <= ALU_OUT;
+                          lsu_wmask <= (wmask << ALU_OUT[1:0]);
+                          lsu_wdata <= (R2_data << (8 * ALU_OUT[1:0]));
+                          //lsu_wdata<= R2_data;
+                          lsu_reqValid <= 1'b1;
+                          if(S_sb || l_lbu) begin
+                            io_lsu_size <= 2'b00;
+                          end
+                          else if(S_sw || l_lw) begin 
+                            io_lsu_size <=2'b10;
+                          end else begin 
+                            io_lsu_size <= 2'b00;
+                          end
+                        end
+                        else begin
+                          state<=LSU_IDLE;
+                          if(lsu_valid && wbu_ready) begin
+                            lsu_valid <= 1'b0;
+                          end
+                        end
+                      end
+                LSU_WAIT: begin
+                    if(lsu_ready) begin
+                        lsu_ready <= 1'b0;
+                    end
+                
+                    if(lsu_reqValid) begin
+                        lsu_reqValid <= 1'b0;
+                    end
+
+                    if (lsu_respValid) begin
+                        lsu_valid <= 1'b1;
+                        state <= LSU_IDLE;
+                        if(lsu_wen) begin
+                            lsu_wen <= 1'b0;
+                        end
+                        if(l_lw) begin
+                            RegWriteData <= deviation_rdata;
+                        end else if(l_lbu) begin
+                            // case(ALU_OUT[1:0])
+                            //     2'b00: RegWriteData = {24'b0, lsu_rdata[7:0]};
+                            //     2'b01: RegWriteData = {24'b0, lsu_rdata[15:8]};
+                            //     2'b10: RegWriteData = {24'b0, lsu_rdata[23:16]};
+                            //     2'b11: RegWriteData = {24'b0, lsu_rdata[31:24]};
+                            // endcase
+                            RegWriteData <= {24'b0, deviation_rdata[7:0]};
+                            end else begin 
+                                RegWriteData <=0;
+                        end
+                end    
+            end                
+            endcase
+        end
+    end
+
+endmodule
+
+module ysyx_25080202_PC (
+    input clk,
+    input rst,
+    input [31:0] next_pc,
+    input wbu_valid,
+    output reg pc_valid,
+    output reg [31:0] pc
+);
+    always @(posedge clk) begin
+        if (rst) begin
+            pc <= 32'h30000000;  // 起始地址
+            pc_valid <= 1;
+        end
+        else if (wbu_valid) begin
+            pc <= next_pc;
+            pc_valid <= 1;
+        end
+        else if(pc_valid) begin
+            pc_valid <= 0;
+        end
+    end
+endmodule
+module ysyx_25080202_RegisterFile(
+  input clk,
+  input rst,
+  input [32-1:0] wdata,
+  input [5-1:0] waddr,
+  input L_wen,
+  input [5-1:0] raddr_1,
+  input [5-1:0] raddr_2,
+  output reg [32-1:0] rdata_1,
+  output reg [32-1:0] rdata_2,
+  
+  // 新增：调试寄存器输出端口
+  output reg [32-1:0] zero,
+  output reg [32-1:0] ra,
+  output reg [32-1:0] sp,
+  output reg [32-1:0] gp,
+  output reg [32-1:0] tp,
+  output reg [32-1:0] t0,
+  output reg [32-1:0] t1,
+  output reg [32-1:0] t2,
+  output reg [32-1:0] s0,
+  output reg [32-1:0] s1,
+  output reg [32-1:0] a0,
+  output reg [32-1:0] a1,
+  output reg [32-1:0] a2,
+  output reg [32-1:0] a3,
+  output reg [32-1:0] a4,
+  output reg [32-1:0] a5  
+);
+  
+    // 寄存器定义（RISC-V ABI名称）
+    localparam ZERO = 0;
+    localparam RA   = 1;
+    localparam SP   = 2;
+    localparam GP   = 3;
+    localparam TP   = 4;
+    localparam T0   = 5;
+    localparam T1   = 6;
+    localparam T2   = 7;
+    localparam S0   = 8;
+    localparam S1   = 9;
+    localparam A0   = 10;
+    localparam A1   = 11;
+    localparam A2   = 12;
+    localparam A3   = 13;
+    localparam A4   = 14;
+    localparam A5   = 15;
+//     reg wen;
+//   assign wen = L_wen;
+reg wen;
+always @(*) begin
+  wen = L_wen;
+end
+  reg [32-1:0] rf [2**(5-1)-1:0];
+
+    always @(posedge clk) begin
+            if (rst) begin
+                rf[0]<= 32'b0;
+                rf[1]<= 32'b0;
+                rf[2]<= 32'b0;
+                rf[3]<= 32'b0;
+                rf[4]<= 32'b0;
+                rf[5]<= 32'b0;
+                rf[6]<= 32'b0;
+                rf[7]<= 32'b0;
+                rf[8]<= 32'b0;
+                rf[9]<= 32'b0;
+                rf[10]<= 32'b0;
+                rf[11]<= 32'b0;
+                rf[12]<= 32'b0;
+                rf[13]<= 32'b0;
+                rf[14]<= 32'b0;
+                rf[15]<= 32'b0;
+            end else begin
+                if (wen) rf[waddr[3:0]] <= wdata;
+        end
+    end
+
+  always @(posedge clk) begin
+    if (wen) rf[waddr[3:0]] <= wdata;
+    //f (waddr == 5'd2) $display("[REG] x2(sp) <= 0x%08h", wdata);
+
+  end
+
+    assign rdata_1 = (raddr_1[3:0] == 0) ? 32'b0 : rf[raddr_1[3:0]];
+    assign rdata_2 = (raddr_2[3:0] == 0) ? 32'b0 : rf[raddr_2[3:0]];
+    
+    // 调试寄存器输出    
+    assign zero = (ZERO == 0) ? 32'b0 : rf[ZERO]; // x0 始终为0
+    assign ra   = rf[RA];
+    assign sp   = rf[SP];
+    assign gp   = rf[GP];
+    assign tp   = rf[TP];
+    assign t0   = rf[T0];
+    assign t1   = rf[T1];
+    assign t2   = rf[T2];
+    assign s0   = rf[S0];
+    assign s1   = rf[S1];
+    assign a0   = rf[A0];
+    assign a1   = rf[A1];
+    assign a2   = rf[A2];
+    assign a3   = rf[A3];
+    assign a4   = rf[A4];
+    assign a5   = rf[A5];
+// `ifdef VERILATOR
+// import "DPI-C" function void set_gpr_ptr(input logic [31:0] a[]);
+//   initial begin 
+//     set_gpr_ptr(rf);
+//   end
+// `endif
+endmodule
+module ysyx_25080202_WBU(
+    input clk,
+    input rst,
+    input [31:0] ALU_OUT,
+    input [31:0] CSR_RDATA,
+    input [31:0] i_csr_wdata,
+    input l_lw,
+    input l_lbu,
+    input I_jalr,
+    input S_sb,
+    input S_sw,
+    input I_add,
+    input R_add,
+    input U_lui,
+    input I_csrrw,
+    input I_csrrs,
+    input [31:0] load_wdata,
+    input lsu_busy,
+    input lsu_valid,
+    input ifu_valid,
+    input [31:0] PC,
+    output reg wbu_ready,
+    output reg wbu_valid,
+    output [31:0] next_pc,
+    output [31:0] reg_wdata,
+    output [31:0] csr_wdata
+);
+
+    localparam IDLE = 2'b00;
+    localparam WAIT = 2'b01;
+    localparam LSUWAIT = 2'b10; 
+    reg [1:0] state;
+    assign next_pc = (I_jalr) ? {ALU_OUT[31:1],1'b0} : PC+4; 
+    assign reg_wdata = (I_jalr) ? PC + 4 : 
+                        (I_csrrw | I_csrrs) ? CSR_RDATA:
+                        (lsu_valid) ? load_wdata : ALU_OUT;
+    assign csr_wdata = i_csr_wdata;          
+
+    always @(posedge clk) begin
+        if (rst) begin
+            state <= IDLE;
+            //next_pc <= 32'h30000004;            
+            wbu_ready <= 1'b0;
+            wbu_valid <= 1'b0;
+            //reg_wdata <= 32'b0;
+            //csr_wdata <= 32'b0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (ifu_valid) begin
+                        if (lsu_busy) begin
+                            state <= LSUWAIT;
+                            wbu_valid <= 1'b0;
+                        end
+                        else begin
+                            state <= WAIT;
+                            wbu_ready <= 1'b1;
+                            
+                                wbu_valid <=1'b1;
+                            
+                        end
+                    end
+                    else begin
+                        state <= IDLE;
+                        if (wbu_ready) begin
+                            wbu_ready <= 1'b0;
+                        end
+                        if (wbu_valid) begin
+                            wbu_valid <= 1'b0;
+                        end
+                    end
+                end                           
+                WAIT: begin
+                    if (wbu_ready) begin
+                        wbu_ready <= 1'b0;
+                    end
+                    if(I_jalr) begin
+                        //next_pc <= {ALU_OUT[31:1],1'b0};
+                        //reg_wdata <= PC + 4;
+                    end else if(I_csrrw) begin
+                        //csr_wdata <= ALU_OUT;
+                        //reg_wdata <=CSR_RDATA;
+                        //next_pc <=PC + 4;
+                    end
+                    else begin
+                        //next_pc <=PC + 4;
+                        //reg_wdata <= ALU_OUT;
+                    end
+                    state <= IDLE;
+                    wbu_valid <= 1'b0;
+
+                end
+                LSUWAIT: begin
+                    if (lsu_valid) begin
+                        wbu_ready <= 1'b1;
+                        //reg_wdata <= load_wdata;
+                        state <= IDLE;
+                        //next_pc <= PC + 4;  
+                              
+                        wbu_valid <= 1'b1;                
+                    end
+                end
+                default:begin
+                    state<=IDLE;
+                    end
+            endcase
+        end
+    end
+
+endmodule
 module ysyx_25080202(
     input clock,
     input reset,
-    
-    output io_ifu_reqValid,
-    output [31:0]io_ifu_addr,
     input io_ifu_respValid,
     input [31:0]io_ifu_rdata,
+    output [31:0] io_ifu_addr,
+    output io_ifu_reqValid,
+    input [31:0]  io_lsu_rdata,
+    input  io_lsu_respValid,
     output io_lsu_reqValid,
-    output [31:0]io_lsu_addr,
-    output [1:0]io_lsu_size,
+    output [31:0] io_lsu_addr,
     output io_lsu_wen,
-    output [31:0]io_lsu_wdata,
-    output [3:0]io_lsu_wmask,
-    input io_lsu_respValid,
-    input [31:0]io_lsu_rdata
-);
+    output [31:0] io_lsu_wdata,
+    output [3:0]  io_lsu_wmask,
+    output [1:0]  io_lsu_size
 
-    /* verilator lint_off WIDTHTRUNC */
+);
+    // ===============================
+    // 内部信号定义
+    // ===============================
+    wire        I_csrrw;
+    wire        I_csrrs;
+    wire [11:0] csr_addr;
+    wire [31:0] csr_wdata;
+    wire [31:0] csr_rdata;
+    wire [31:0] PC_plus_4;
+    wire [31:0] ALU_OUT;
+    wire [31:0] R1_data;
+    wire [31:0] R2_data;
+    wire [31:0] RegWriteData;
+    wire Reg_WE;
+    wire I_jalr;
+    wire [4:0] r1, r2, rd;
+    wire [31:0] imm;
+    wire R_TYPE, I_TYPE_ARITH, L_TYPE_LOAD, S_TYPE, U_TYPE, I_TYPE;
+    wire B_TYPE, J_TYPE, U_lui, R_add, l_lw, l_lbu, I_add, S_sw, S_sb, I_ebreak;
+    wire [3:0] wmask;
+    // ===== IFU ↔ Memory =====
+    //wire [31:0] ifu_raddr;
+    //reg [31:0] ifu_rdata;
+    reg        ifu_reqValid;
+    reg        ifu_respValid;
+    wire        ifu_valid;
+    wire        pc_valid;
+    wire [31:0] PC;
+    wire        cpu_en;
+    // ===== LSU ↔ Memory =====
+   // wire [31:0] lsu_addr;
+    //wire [31:0] lsu_wdata;
+   // wire [3:0]  lsu_wmask;
+   // wire [31:0] lsu_rdata;
+    // wire        lsu_wen;
+    // wire        lsu_reqValid;
+    // wire        lsu_respValid;
+    wire        lsu_ready;
+    wire        lsu_working;
+    wire        lsu_valid;
+    // ===== WBU 控制信号 =====
+    wire        wbu_ready;
+    wire        wbu_valid;
+    wire [31:0] next_pc;
+    wire [31:0] reg_wdata;
+    wire [31:0] csr_wdata_out;
+    wire [31:0] inst;
+
+   // wire ifu_wen;
+
+    // ===============================
+    // 指令存储器仿真接口
+    // ===============================
+    //import "DPI-C" function int pmem_read(input int raddr);
+
+    ysyx_25080202_IFU ifu (
+        .clk(clock),
+        .rst(reset),
+        .PC(PC),
+        .inst(inst),
+        .pc_valid(pc_valid),
+        .wbu_ready(wbu_ready),
+        .ifu_valid(ifu_valid),
+        .ifu_wen(),
+        .ifu_reqValid(io_ifu_reqValid),   // *** 修改：连接握手信号
+        .ifu_respValid(io_ifu_respValid),// *** 修改：连接握手信号
+        .ifu_raddr(io_ifu_addr),
+        .ifu_rdata(io_ifu_rdata),
+        .lsu_ready(lsu_ready)
+    );
+
+
+    wire [31:0] load_wdata;
     `ifdef VERILATOR
-    // import "DPI-C" function byte unsigned pmem_read_ram(input int unsigned raddr);
-    // import "DPI-C" function int pmem_read_rom(input int raddr);
-    // export "DPI-C" function trap;
-    // function int trap();
-    //     return is_ebreak?1:0;
-    // endfunction
     import "DPI-C" function void notify_ebreak();
-always @(posedge clock) begin
-    if (is_ebreak && $time > 0) begin
-        notify_ebreak();
-    end
-end
-    
-    // export "DPI-C" function get_pc;
-    // function int get_pc();
-    //     get_pc = pc_data_out;
-    // endfunction
-    `endif
-    wire [31:0]pc_data_in;
-    wire [31:0]pc_data_out;
-    wire [31:0]decode;
-    wire [31:0]snpc;
-    wire [31:0]dnpc;
-    wire [31:0]dnpc1;
-    wire [3:0]raddr1;
-    wire [3:0]raddr2;
-    wire [31:0]src1;
-    wire [31:0]src2;
-    wire [3:0]waddr;
-    wire [31:0]wdata;
-    wire [5:0]fetch;
-    wire [31:0]mtvec;
-    wire [31:0]mepc;
-    wire [31:0]csr_rdata;
-    wire [11:0]csr_rkey;
-    wire [2:0]csr_mask;
-    // wire [31:0]r1;
-    wire [31:0]mcycle;
-    wire [31:0]mcycleh;
-    wire [31:0]lsu_addr;
-    wire [31:0]lsu_rdata;
-    wire lsu_ren;
-    wire lsu_wen;
-    wire [31:0]lsu_wdata;
-    wire [31:0]lsu_wmask;
-    wire lsu_rready;
-    wire is_isa_raise_intr;
-    wire is_cpu_wen;
-    wire is_mret;
-    wire csr_wen;
-    wire is_jalr;
-    wire gpr_wen;
-    wire is_ebreak;
-    wire [31:0]wbu_wdata;
-    wire rready;
-    wire [1:0]addr_off;
-    assign is_jalr = (fetch == 6'b011111||fetch == 6'b100000||
-    fetch == 6'b100001||fetch == 6'b100010||fetch == 6'b100100||
-    fetch == 6'b100011||fetch == 6'b000001||fetch == 6'b000010||
-    fetch == 6'b100111||fetch == 6'b101000)?1:0;
-    assign raddr1 = decode[18:15];
-    assign raddr2 = decode[23:20];
-    assign csr_rkey[11:0] = decode[31:20];
-    assign wbu_wdata = lsu_ren?lsu_rdata:wdata;
-    wire pc_valid;
-    assign pc_valid = (lsu_ren||lsu_wen)?lsu_rready:rready;
-    assign io_ifu_addr = pc_data_out;
-    assign io_lsu_addr = lsu_addr;
-    assign io_lsu_wen = lsu_wen;
-    assign io_lsu_wdata = lsu_wdata<<(8*lsu_addr[1:0]);
-    assign io_lsu_wmask = lsu_wmask<<lsu_addr[1:0];
-    assign addr_off = lsu_addr[1:0];
-    assign dnpc = is_isa_raise_intr?mtvec:(is_mret?mepc:dnpc1);       
-    ysyx_25070194_new_IFU ysyx_25070194_my_ifu(
-        .clock(clock),
-        .reset(reset),
-        .rvalid(io_ifu_respValid),
-        .rready(rready),
-        .arready(io_ifu_reqValid),
-        .rdata(decode),
-        .io_ifu_rdata(io_ifu_rdata),
-        .is_cpu_wen(is_cpu_wen),
-        .lsu_rready(lsu_rready),
-        .lsu_ren(lsu_ren),
-        .lsu_wen(lsu_wen)
-    );
-    ysyx_25070194_mux_32_2 ysyx_25070194_dnpc_mux(
-        .data1(dnpc1),
-        .data2(mtvec),
-        .sel(is_isa_raise_intr),
-        .out(dnpc)
-    );
-    ysyx_25070194_mux_32_2 ysyx_25070194_pc_mux(
-        .data1(snpc),
-        .data2(dnpc),
-        .sel(is_jalr),
-        .out(pc_data_in)
-    );
-    ysyx_25070194_register ysyx_25070194_pc(
-        .clock(clock),
-        .reset(reset),
-        .en(pc_valid),
-        .q(pc_data_out),
-        .p(pc_data_in)
-    );
-    ysyx_25070194_alu ysyx_25070194_decoder(
-        .decode(decode),
-        // .r1(r1),
-        .is_cpu_wen(is_cpu_wen),
-        .pc(pc_data_out),
-        .src1(src1),
-        .src2(src2),
-        .data_out1(wdata),
-        .data_out2(dnpc1),
-        .waddr(waddr),
-        .csr_rdata(csr_rdata),
-        .dnpc(snpc),
-        .fetch(fetch),
-        .is_ebreak(is_ebreak),
-        .is_isa_raise_intr(is_isa_raise_intr),
-        .is_mret(is_mret),
-        .gpr_wen(gpr_wen),
-        .csr_wen(csr_wen),
-        .lsu_addr(lsu_addr),
-        .lsu_ren(lsu_ren),
-        .lsu_wdata(lsu_wdata),
-        .lsu_wen(lsu_wen),
-        .lsu_wmask(lsu_wmask)
-    );
-    ysyx_25070194_LSU ysyx_25070194_my_lsu(
-        .clock(clock),
-        .reset(reset),
-        .lsu_rdata(lsu_rdata),
-        .lsu_wen(lsu_wen),
-        .lsu_ren(lsu_ren),
-        .fetch(fetch),
-        .lsu_rready(lsu_rready),
-        .size(io_lsu_size),
-        .io_lsu_rdata(io_lsu_rdata),
-        .io_lsu_respValid(io_lsu_respValid),
-        .io_lsu_reqValid(io_lsu_reqValid),
-        .addr_off(addr_off)
-    );
-    ysyx_25070194_csr_mux ysyx_25070194_my_csr_mux(
-        .key(csr_rkey),
-        .mask(csr_mask)
-    );
-    ysyx_25070194_RegisterFile #(.ADDR_WIDTH(4),.DATA_WIDTH(32)) ysyx_25070194_gpr(
-        .reset(reset),
-        .clock(clock),
-        .wen(gpr_wen),
-        .wdata(wbu_wdata),
-        .waddr(waddr),
-        .raddr1(raddr1),
-        .raddr2(raddr2),
-        .rdata1(src1),
-        .rdata2(src2)
-        // .r1(r1)
-    );
-    ysyx_25070194_csr ysyx_25070194_my_csr(
-        .reset(reset),
-        .wen(csr_wen),
-        .clock(clock),
-        .is_isa_raise_intr(is_isa_raise_intr),
-        .NO(4'hb),
-        .epc(pc_data_out),
-        .wdata(dnpc1),
-        .waddr(csr_mask),
-        .raddr(csr_mask),
-        .rdata(csr_rdata),
-        .mtvec(mtvec),
-        .mepc(mepc),
-        .mcycle(mcycle),
-        .mcycleh(mcycleh)
-    );
-    ysyx_25070194_mcycle ysyx_25070194_my_mcycle(
-        .clock(clock),
-        .reset(reset),
-        .p(mcycle+1),
-        .q(mcycle)
-    );
-    ysyx_25070194_mcycleh ysyx_25070194_my_mcycleh(
-        .clock(clock),
-        .reset(reset),
-        .low(mcycle),
-        .p(mcycleh+1),
-        .q(mcycleh)
-    );
-endmodule
-module ysyx_25070194_new_IFU(
-    input clock,
-    input reset,
-    input rvalid,
-    input lsu_rready,
-    inout lsu_ren,
-    input lsu_wen,
-    input [31:0]io_ifu_rdata,
-    output reg arready,
-    output rready,
-    output reg is_cpu_wen,
-    output [31:0]rdata
-);
-    // import "DPI-C" function int pmem_read_rom(input int raddr);
-    typedef enum logic [1:0] {
-        IDLE  = 2'b00,
-        WAIT  = 2'b01
-    } state_t;
-    reg is_re_arready;
-    reg is_first_arready;
-    reg [1:0]    curr_state, next_state;                   
-    reg [31:0]   rdata_temp;           
-    always @(*) begin
-        is_cpu_wen = 0;
-        // next_state = curr_state;
-        case (curr_state)
-            IDLE: begin
-                if(rvalid) begin
-                    next_state = WAIT;
-                end
-                else    next_state = IDLE;
-            end
-
-            WAIT: begin
-                if(~(lsu_ren||lsu_wen)||lsu_rready)begin
-                    is_cpu_wen = 1;
-                    next_state = IDLE;
-                end
-                else begin
-                    is_cpu_wen = 0;
-                    next_state = WAIT;
-                end
-            end
-
-            default: begin
-                next_state = IDLE;
-            end
-        endcase
-    end
-    
-    assign rready  = (curr_state == WAIT||reset == 1);
-    assign rdata   = (curr_state == WAIT) ? rdata_temp : 32'd0;
-
     always @(posedge clock) begin
-        if (reset) begin
-            rdata_temp <= 0;
-            is_first_arready <= 0;
-            curr_state <= IDLE;
-            is_re_arready <= 0;
-            arready <= 0;
+        if (I_ebreak && $time > 0) begin
+            $display("[TRAP] EBREAK at PC = 0x%08x", PC);
+            notify_ebreak();
         end
-        else begin
-            arready <= (curr_state == WAIT && is_re_arready 
-            && ~(lsu_ren||lsu_wen) ||~is_first_arready||lsu_rready );
-            is_first_arready <= 1;
-            is_re_arready <= 1;
-            curr_state <= next_state;
-            if (curr_state == IDLE && rvalid) begin
-            rdata_temp <= io_ifu_rdata; 
-            end
-            else if(curr_state == IDLE) begin
-                is_re_arready <= 0;
-            end
-        end 
     end
-endmodule
-module ysyx_25070194_mux_32_2(
-    input [31:0]data1,
-    input [31:0]data2,
-    input sel,
-    output reg [31:0]out
-);
-    always@(*)begin
-        case(sel)
-            0:out=data1;
-            1:out=data2;
-        endcase
-    end
-endmodule
-module ysyx_25070194_register #(DATA_WIDTH = 32)(
-    input clock,
-    input reset,
-    input en,
-    input [DATA_WIDTH-1:0]p,
-    output reg [DATA_WIDTH-1:0]q
-);
-    always@(posedge clock) begin
-        if(reset) q<=32'h30000000;
-        else if(en)  q<=p;
-    end
-endmodule
-module ysyx_25070194_alu(
-    input [31:0]pc,
-    input [31:0]src1,
-    input [31:0]src2,
-    input [31:0]decode,
-    // input [31:0]r1,
-    input is_cpu_wen,
-    input [31:0]csr_rdata,
-    output reg[31:0]data_out1,
-    output reg[31:0]data_out2,
-    output reg[3:0]waddr,
-    output reg[5:0]fetch,
-    output reg gpr_wen,
-    output reg csr_wen,
-    output reg[31:0]dnpc,
-    output reg is_ebreak,
-    output reg is_isa_raise_intr,
-    output reg is_mret,
-    output reg lsu_ren,
-    output reg lsu_wen,
-    output reg [31:0]lsu_addr,
-    output reg [31:0]lsu_wdata,
-    output reg [31:0]lsu_wmask
-);
-//`define CONFIG_FTRACE 1
-    /* verilator lint_off WIDTHTRUNC */
-    `ifdef VERILATOR
-    // import "DPI-C" function void call_function(input int unsigned pc,input int unsigned dnpc);
-    // import "DPI-C" function void ret_function(input int unsigned pc,input int unsigned dnpc);
     `endif
-    reg [11:0]imm_i;
-    reg [19:0]imm_u;
-    reg [11:0]imm_s;
-    reg [20:0]imm_j;
-    reg [12:0]imm_b;
-    wire signed [31:0] src1_signed = src1;
-    wire signed [31:0] src2_signed = src2;
-    reg [31:0]imm_i_un;
-    always@(*)begin
-        is_ebreak = 0;
-        is_mret = 0;
-        is_isa_raise_intr = 0;
-        dnpc = pc+4;
-        waddr = decode[10:7];
-        data_out1 = 0;
-        data_out2 = 0;
-        fetch = 0;
-        lsu_addr = 0;
-        lsu_wdata = 0;
-        lsu_wmask = 0;
-        imm_i[11:0] = decode[31:20];
-        imm_u[19:0] = decode[31:12];
-        imm_s[11:0] = {decode[31:25],decode[11:7]};
-        imm_j[20:0] = {decode[31],decode[19:12],decode[20],decode[30:21],1'b0};
-        imm_b[12:0] = {decode[31],decode[7],decode[30:25],decode[11:8],1'b0};
-        lsu_ren = 0;
-        lsu_wen = 0;
-        
-        casez(decode)
 
-//-------------------------------------minirv----------------------------------------------------
+    ysyx_25080202_PC pc(
+        .clk(clock),
+        .rst(reset),
+        .next_pc(next_pc),
+        .wbu_valid(wbu_valid),
+        .pc_valid(pc_valid),
+        .pc(PC)
+    );
 
-            32'bzzzzzzzzzzzzzzzzz000zzzzz0010011:begin//addi
-                fetch = 6'b000000;
-                data_out1 = src1+{{20{imm_i[11]}},imm_i};
-            end
-            32'bzzzzzzzzzzzzzzzzz000zzzzz1100111:begin//jalr
-                fetch = 6'b000001;
-                data_out2 = (src1+{{20{imm_i[11]}},imm_i})&~32'h1;
-                data_out1 = pc+4;
-                `ifdef CONFIG_FTRACE
-                if(waddr == 1) begin
-                    call_function(pc,data_out2);
-                end
-                else if(waddr == 0) begin
-                    ret_function(pc,data_out2);
-                end
-                `endif 
-            end
-            32'bzzzzzzzzzzzzzzzzzzzzzzzzz1101111:begin//jal,j
-                fetch = 6'b000010;
-                data_out1 = pc+4;
-                data_out2 = pc+{{11{imm_j[20]}},imm_j};
-                `ifdef CONFIG_FTRACE
-                if(waddr == 1) begin
-                    call_function(pc,data_out2);
-                end
-                `endif 
-            end
-            32'b0000000zzzzzzzzzz000zzzzz0110011:begin//add
-                fetch = 6'b000011;
-                data_out1 = src1+src2;
-            end
-            32'bzzzzzzzzzzzzzzzzzzzzzzzzz0110111:begin//lui
-                fetch = 6'b000100;
-                data_out1 = imm_u<<12;
-            end
+    ysyx_25080202_IDU idu(
+        .inst(inst),
+        .R_TYPE(R_TYPE),
+        .I_TYPE_ARITH(I_TYPE_ARITH),
+        .L_TYPE_LOAD(L_TYPE_LOAD),
+        .S_TYPE(S_TYPE),
+        .U_TYPE(U_TYPE),
+        .I_TYPE(I_TYPE),
+        .MemWEn(),
+        .B_TYPE(B_TYPE),
+        .J_TYPE(J_TYPE),
+        .I_jalr(I_jalr),
+        .U_lui(U_lui),
+        .R_add(R_add),
+        .l_lw(l_lw),
+        .l_lbu(l_lbu),
+        .I_add(I_add),
+        .S_sw(S_sw),
+        .S_sb(S_sb),
+        .I_ebreak(I_ebreak),
+        .I_csrrw(I_csrrw),
+        .I_csrrs(I_csrrs),
+        .csr_addr(csr_addr),
+        .imm(imm),
+        .r1(r1),
+        .r2(r2),
+        .rd(rd),
+        .wmask(wmask)
+    );
 
-//--------------------------------------memory-------------------------------------------------
+    ysyx_25080202_LSU lsu (
+        .rst(reset),
+        .clk(clock),
+        .rd(rd),
+        .R2_data(R2_data),
+        .ALU_OUT(ALU_OUT),
+        .l_lw(l_lw),
+        .l_lbu(l_lbu),
+        .S_sb(S_sb),
+        .S_sw(S_sw),
+        .R_TYPE(R_TYPE),
+        .I_TYPE_ARITH(I_TYPE_ARITH),
+        .U_TYPE(U_TYPE),
+        .J_TYPE(J_TYPE),
+        .I_csrrw(I_csrrw),
+        .CSR_RDATA(csr_rdata),
+        //.lsu_en(cpu_en),
+        .I_TYPE(I_TYPE),
+        .wmask(wmask),
+        // ===== SimpleBus 信号 =====
+        .ifu_valid(ifu_valid),
+        .wbu_ready(wbu_ready),
+        .lsu_valid(lsu_valid),
+        .lsu_reqValid(io_lsu_reqValid),   // *** 修改：增加 reqValid 信号连接
+        .lsu_respValid(io_lsu_respValid), // *** 修改：增加 respValid 信号连接
+        .lsu_rdata(io_lsu_rdata),
+        .lsu_addr(io_lsu_addr),
+        .lsu_wen(io_lsu_wen),
+        .lsu_wdata(io_lsu_wdata),
+        .lsu_wmask(io_lsu_wmask),
+        .lsu_ready(lsu_ready),
+        .lsu_working(lsu_working),
+        .io_lsu_size(io_lsu_size),
+        //.wb_addr(lsu_wb_addr),
+        // ===== 写回寄存器 =====
+        .RegWriteData(load_wdata)
+        //.Reg_WE(Reg_WE)
+    );
 
-            32'bzzzzzzzzzzzzzzzzz010zzzzz0000011:begin//lw
-                lsu_ren = 1;
-                fetch = 6'b000101;
-                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
-                lsu_wmask = {{28{1'b0}},4'b1111};
-            end
-            32'bzzzzzzzzzzzzzzzzz100zzzzz0000011:begin//lbu
-                lsu_ren = 1;
-                fetch = 6'b000110;
-                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
-                lsu_wmask = {{28{1'b0}},4'b0001};
-            end
-            32'bzzzzzzzzzzzzzzzzz101zzzzz0000011:begin//lhu,i
-                lsu_ren = 1;
-                fetch = 6'b000111;
-                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
-                lsu_wmask = {{28{1'b0}},4'b0011};
-            end
-            32'bzzzzzzzzzzzzzzzzz001zzzzz0000011:begin//lh,i
-                lsu_ren = 1;
-                fetch = 6'b001000;
-                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
-                lsu_wmask = {{28{1'b0}},4'b0011};
-            end
-            32'bzzzzzzzzzzzzzzzzz000zzzzz0000011:begin//lb,i
-                lsu_ren = 1;
-                fetch = 6'b001001;
-                lsu_addr = src1+{{20{imm_i[11]}},imm_i};
-                lsu_wmask = {{28{1'b0}},4'b0001};
-            end
-            32'bzzzzzzzzzzzzzzzzz010zzzzz0100011:begin//sw
-                lsu_wen = 1;
-                fetch = 6'b001010;
-                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
-                lsu_wdata = src2;
-                lsu_wmask = {{28{1'b0}},4'b1111};
-            end
-            32'bzzzzzzzzzzzzzzzzz000zzzzz0100011:begin//sb
-                lsu_wen = 1;
-                fetch = 6'b001011;
-                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
-                lsu_wdata = {{24{1'b0}},src2[7:0]};
-                lsu_wmask = {{28{1'b0}},4'b0001};
-            end
-            32'bzzzzzzzzzzzzzzzzz001zzzzz0100011:begin//sh
-                lsu_wen = 1;
-                fetch = 6'b001100;
-                lsu_addr = src1+{{20{imm_s[11]}},imm_s};
-                lsu_wdata = {{16{1'b0}},src2[15:0]};
-                lsu_wmask = {{28{1'b0}},4'b0011};
-            end
+    ysyx_25080202_RegisterFile regfile (
+        .clk(clock),
+        .rst(reset),
+        .wdata(reg_wdata),
+        .waddr(rd),
+        .L_wen(wbu_valid && !(S_sb||S_sw)),
+        .raddr_1(r1),
+        .raddr_2(r2),
+        .rdata_1(R1_data),
+        .rdata_2(R2_data),
+        .zero(),
+        .ra(),
+        .sp(),
+        .gp(),
+        .tp(),
+        .s0(),
+        .s1(),
+        .a0(),
+        .a1(),
+        .a2(),
+        .a3(),
+        .a4(),
+        .a5()
+    );
 
-//--------------------------------------other-------------------------------------------------------
+    ysyx_25080202_EXU alu (
+        .R_TYPE(R_TYPE),
+        .I_TYPE(I_TYPE),
+        .S_TYPE(S_TYPE),
+        .B_TYPE(B_TYPE),
+        .J_TYPE(J_TYPE),
+        .U_TYPE(U_TYPE),
+        .R_add(R_add),
+        .I_add(I_add),
+        .I_jalr(I_jalr),
+        .l_lbu(l_lbu),
+        .l_lw(l_lw),
+        .I_csrrw(I_csrrw),
+        .I_csrrs(I_csrrs),
+        .rdata_1(R1_data),
+        .rdata_2(R2_data),
+        .imm(imm),
+        .pc(PC),
+        .csr_wdata(csr_wdata),
+        .ALU_OUT(ALU_OUT)
+    );
 
-            32'b0100000zzzzzzzzzz000zzzzz0110011:begin//sub,r
-                fetch = 6'b001101;
-                data_out1 = src1-src2;
-            end
-            32'bzzzzzzzzzzzzzzzzzzzzzzzzz0010111:begin//auipc,u
-                fetch = 6'b001110;
-                data_out1 = pc+({{12{imm_u[19]}},imm_u}<<12);
-            end
-            32'b0000000zzzzzzzzzz111zzzzz0110011:begin//and,r
-                fetch = 6'b001111;
-                data_out1 = src1&src2;
-            end
-            32'bzzzzzzzzzzzzzzzzz111zzzzz0010011:begin//andi,i
-                fetch = 6'b010000;
-                data_out1 = src1&{{20{imm_i[11]}},imm_i};
-            end
-            32'b0000000zzzzzzzzzz110zzzzz0110011:begin//or,r
-                fetch = 6'b010001;
-                data_out1 = src1|src2;
-            end
-            32'b0000000zzzzzzzzzz100zzzzz0110011:begin//xor,r
-                fetch = 6'b010010;
-                data_out1 = src1^src2;
-            end
-            32'bzzzzzzzzzzzzzzzzz100zzzzz0010011:begin//xori,i
-                fetch = 6'b010011;
-                data_out1 = src1^{{20{imm_i[11]}},imm_i};
-            end
-            32'bzzzzzzzzzzzzzzzzz110zzzzz0010011:begin//ori,i
-                fetch = 6'b010100;
-                data_out1 = src1|{{20{imm_i[11]}},imm_i};
-            end
-
-//-----------------------------------logical move-----------------------------------------------
-
-            32'b0000000zzzzzzzzzz001zzzzz0110011:begin//sll,r
-                fetch = 6'b010101;
-                data_out1 = src1<<src2[4:0];
-            end
-            32'b0000000zzzzzzzzzz101zzzzz0110011:begin//srl,r
-                fetch = 6'b010110;
-                data_out1 = src1>>src2[4:0];
-            end
-            32'b0100000zzzzzzzzzz101zzzzz0110011:begin//sra,r
-                fetch = 6'b010111;
-                data_out1 = src1_signed>>>src2[4:0];
-            end
-            32'b0100000zzzzzzzzzz101zzzzz0010011:begin//srai,i
-                fetch = 6'b011000;
-                data_out1 = src1_signed>>>{{27{1'b0}}, decode[24:20]};
-            end
-            32'b0000000zzzzzzzzzz101zzzzz0010011:begin//srli,i
-                fetch = 6'b011001;
-                data_out1 = src1>>{{27{1'b0}}, decode[24:20]};
-            end
-            32'b0000000zzzzzzzzzz001zzzzz0010011:begin//slli,i
-                fetch = 6'b011010;
-                data_out1 = src1<<{{27{1'b0}}, decode[24:20]};
-            end
-            32'bzzzzzzzzzzzzzzzzz010zzzzz0010011:begin//slti,i,视为补码
-                fetch = 6'b011011;
-                data_out1 = src1_signed<{{20{imm_i[11]}},imm_i}?1:0;
-            end
-            32'b0000000zzzzzzzzzz010zzzzz0110011:begin//slt,r,视为补码
-                fetch = 6'b011100;
-                data_out1 = src1_signed<src2_signed?1:0;
-            end
-            32'b0000000zzzzzzzzzz011zzzzz0110011:begin//sltu,r,视为无符号数
-                fetch = 6'b011101;
-                data_out1 = src1<src2?1:0;
-            end
-            32'bzzzzzzzzzzzzzzzzz011zzzzz0010011:begin//sltiu,i,视为无符号数
-                fetch = 6'b011110;
-                imm_i_un = {{20{imm_i[11]}},imm_i};
-                data_out1 = src1<imm_i_un?1:0;
-            end
-
-//----------------------------------b跳转相关-------------------------------------------------
-
-            32'bzzzzzzzzzzzzzzzzz001zzzzz1100011:begin//bne,b
-                fetch = 6'b011111;
-                if(src1!=src2)begin  
-                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-            32'bzzzzzzzzzzzzzzzzz000zzzzz1100011:begin//beq,b
-                fetch = 6'b100000;
-                if(src1==src2)begin
-                  data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-            32'bzzzzzzzzzzzzzzzzz100zzzzz1100011:begin//blt,b,视为补码
-                fetch = 6'b100001;
-                if(src1_signed<src2_signed)begin
-                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-            32'bzzzzzzzzzzzzzzzzz101zzzzz1100011:begin//bge,b,视为补码
-                fetch = 6'b100010;
-                if(src1_signed>=src2_signed)begin
-                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-            32'bzzzzzzzzzzzzzzzzz110zzzzz1100011:begin//bltu,b,视为无符号数
-                fetch = 6'b100011;
-                if(src1<src2)begin
-                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-            32'bzzzzzzzzzzzzzzzzz111zzzzz1100011:begin//bgeu,b,视为无符号数
-                fetch = 6'b100100;
-                if(src1>=src2)begin
-                    data_out2 = pc+{{19{imm_b[12]}},imm_b};
-                end
-                else begin
-                    data_out2 = dnpc;
-                end
-            end
-//----------------------------------m异常中断-------------------------------------------------
-            32'bzzzzzzzzzzzzzzzzz001zzzzz1110011:begin//csrrw
-                fetch = 6'b100101;
-                data_out1 = csr_rdata;
-                data_out2 = src1;
-            end
-            32'bzzzzzzzzzzzzzzzzz010zzzzz1110011:begin//csrrs
-                fetch = 6'b100110;
-                data_out1 = csr_rdata;
-                data_out2 = csr_rdata|src1;
-            end
-            32'b00000000000000000000000001110011:begin//ecall
-                fetch = 6'b100111;
-                is_isa_raise_intr = 1;
-            end
-            32'b00110000001000000000000001110011:begin//mret
-                fetch = 6'b101000;
-                is_mret = 1;
-            end
-            32'b00000000000100000000000001110011:is_ebreak = 1;
-            default: begin
-                data_out1 = 0;
-                data_out2 = 0;
-                fetch = 0;
-                lsu_addr = 0;
-                lsu_wdata = 0;
-                lsu_wmask = 0;
-            end
-        endcase
-        if(fetch==6'b001010||fetch==6'b001011||fetch==6'b001100||fetch == 6'b011111||
-        fetch == 6'b100011||fetch == 6'b100000||fetch == 6'b100001||fetch == 6'b100010||
-        fetch == 6'b100100||fetch == 6'b100111||fetch == 6'b101000||is_cpu_wen == 0)  gpr_wen = 0;
-        else    gpr_wen = 1;
-        if((fetch == 6'b100101||fetch == 6'b100110)&&is_cpu_wen == 1) begin
-            csr_wen = 1;
-        end
-        else begin
-            csr_wen = 0;
-        end
-    end
+    ysyx_25080202_CSR csr(
+        .clk(clock),
+        .rst(reset),
+        .I_csrrw(I_csrrw),
+        .I_csrrs(I_csrrs),
+        .csr_addr(csr_addr),
+        .csr_wdata(csr_wdata_out),
+        .csr_rdata(csr_rdata)
+    );
+    ysyx_25080202_WBU wbu (
+        .clk(clock),
+        .rst(reset),
+        .ALU_OUT(ALU_OUT),
+        .CSR_RDATA(csr_rdata),
+        .i_csr_wdata(csr_wdata),
+        .l_lw(l_lw),
+        .l_lbu(l_lbu),
+        .I_jalr(I_jalr),
+        .S_sb(S_sb),
+        .S_sw(S_sw),
+        .I_add(I_add),
+        .R_add(R_add),
+        .U_lui(U_lui),
+        .I_csrrw(I_csrrw),
+        .I_csrrs(I_csrrs),
+        .load_wdata(load_wdata),
+        .lsu_busy(lsu_working),
+        .lsu_valid(lsu_valid),
+        .ifu_valid(ifu_valid),
+        .PC(PC),
+        .wbu_ready(wbu_ready),
+        .wbu_valid(wbu_valid),
+        .next_pc(next_pc),
+        .reg_wdata(reg_wdata),
+        .csr_wdata(csr_wdata_out)
+    );
 endmodule
-module ysyx_25070194_LSU(
-    input clock,
-    input reset,
-    input lsu_wen,
-    input [5:0]fetch,
-    input [31:0]io_lsu_rdata,
-    input [1:0]addr_off,
-    input io_lsu_respValid,
-    input lsu_ren,
-    output reg lsu_rready,
-    output reg [31:0]lsu_rdata,
-    output reg [1:0]size,
-    output reg io_lsu_reqValid
-);
-`ifdef VERILATOR
-    // import "DPI-C" function byte unsigned pmem_read_ram(input int unsigned raddr);
-    // import "DPI-C" function int pmem_write(
-    // input int unsigned waddr, input int unsigned wdata, input int wmask);
-`endif
-    reg is_first_lsu_rready;
-    reg is_been_alloc;
-    reg [1:0]en_flash;
-    wire [15:0]io_lsu_rdata1;
-    assign io_lsu_rdata1 = io_lsu_rdata>>(addr_off*8);
-    always @(posedge clock) begin
-        en_flash <= {en_flash[0],(lsu_ren||lsu_wen)};
-        is_been_alloc <= ~en_flash[1]&&en_flash[0];
-        case(fetch)
-            6'b000101:size <= 2'b10;
-            6'b000110:size <= 2'b00;
-            6'b000111:size <= 2'b01;
-            6'b001000:size <= 2'b01;
-            6'b001001:size <= 2'b00;
-            6'b001010:size <= 2'b10;
-            6'b001011:size <= 2'b00;
-            6'b001100:size <= 2'b01;
-            default:size <= 2'b00;
-        endcase
-        if (reset) begin
-            lsu_rready <= 1'b0;
-            lsu_rdata  <= 32'b0;
-            is_first_lsu_rready <= 1;
-            io_lsu_reqValid <= 0;
-            is_been_alloc <= 0;
-        end
-        else begin
-            if(io_lsu_reqValid) begin
-                is_first_lsu_rready <= 0;
-            end
-            lsu_rready <= 0;
-            io_lsu_reqValid <= ((lsu_ren||lsu_wen)&&is_been_alloc)||(is_first_lsu_rready&&(lsu_ren||lsu_wen));
-            if(io_lsu_respValid) begin
-                case(fetch)
-                    6'b000101:begin
-                        lsu_rdata <= (!lsu_wen) ? io_lsu_rdata : 32'b0;
-                        lsu_rready <= 1;
-                    end
-                    6'b000110:begin
-                        lsu_rdata <= (!lsu_wen) ? {{24{1'b0}},io_lsu_rdata1[7:0]} : 32'b0;
-                        lsu_rready <= 1;
-                    end
-                    6'b000111:begin
-                        lsu_rdata <= (!lsu_wen) ? {{16{1'b0}},io_lsu_rdata1[15:0]} : 32'b0;
-                        lsu_rready <= 1;
-                    end
-                    6'b001000:begin
-                        lsu_rdata <= (!lsu_wen) ? {{16{io_lsu_rdata1[15]}},io_lsu_rdata1[15:0]} : 32'b0;
-                        lsu_rready <= 1;
-                    end
-                    6'b001001:begin
-                        lsu_rdata <= (!lsu_wen) ? {{24{io_lsu_rdata1[7]}},io_lsu_rdata1[7:0]} : 32'b0;
-                        lsu_rready <= 1;
-                    end
-                    default:begin
-                        lsu_rdata <= 32'b0;
-                        lsu_rready <= 0;
-                    end
-                endcase
-            end
-            if (lsu_wen&&io_lsu_respValid) begin
-                lsu_rready <= 1;
-            end
-        end
-    end
-endmodule
-module ysyx_25070194_csr_mux(
-    input [11:0]key,
-    output reg [2:0]mask
-);
-    always@(*)begin
-        case(key)
-            12'h342:mask=3'b000;//mcause
-            12'h300:mask=3'b001;//mstatus
-            12'h341:mask=3'b010;//mepc
-            12'h305:mask=3'b011;//mtvec
-            12'hb00:mask=3'b100;//mcycle
-            12'hb80:mask=3'b101;//mcycleh
-            12'hf11:mask=3'b110;//mvendorid
-            12'hf12:mask=3'b111;//marchid
-            default:mask=3'b000;
-        endcase
-    end
-endmodule
-module ysyx_25070194_RegisterFile #(ADDR_WIDTH = 5, DATA_WIDTH = 32) (
-  input clock,
-  input reset,
-  input [DATA_WIDTH-1:0] wdata,
-  input [ADDR_WIDTH-1:0] waddr,
-  input [ADDR_WIDTH-1:0] raddr1,
-  input [ADDR_WIDTH-1:0] raddr2,
-  input wen,
-  output [DATA_WIDTH-1:0] rdata1,
-  output [DATA_WIDTH-1:0] rdata2
-//   output reg [DATA_WIDTH-1:0] r1
-);
-  reg [DATA_WIDTH-1:0] rf [2**ADDR_WIDTH-1:0];
-  `ifdef VERILATOR
-//   export "DPI-C" function get_reg;
-//   function int get_reg(input int num);
-//     if(num>5'b11111)  begin 
-//       get_reg = 32'h11451419;
-//     end
-//     else  begin 
-//       get_reg = rf[num];
-//     end
-//   endfunction
-  `endif 
-  always @(posedge clock) begin
-    if(reset) begin
-        rf[0] <= 32'b0;
-        rf[1] <= 32'b0;
-        rf[2] <= 32'b0;
-        rf[3] <= 32'b0;
-        rf[4] <= 32'b0;
-        rf[5] <= 32'b0;
-        rf[6] <= 32'b0;
-        rf[7] <= 32'b0;
-        rf[8] <= 32'b0;
-        rf[9] <= 32'b0;
-        rf[10] <= 32'b0;
-        rf[11] <= 32'b0;
-        rf[12] <= 32'b0;
-        rf[13] <= 32'b0;
-        rf[14] <= 32'b0;
-        rf[15] <= 32'b0;
-    end
-    else if (wen&&waddr!=0) rf[waddr] <= wdata;
-  end
-  assign rdata1 = (raddr1==0)?0:rf[raddr1];
-  assign rdata2 = (raddr2==0)?0:rf[raddr2];
-//   assign r1 = rf[1];
-endmodule            
-module ysyx_25070194_csr(
-    input reset,
-    input clock,
-    input wen,
-    input [31:0]epc,
-    input [3:0]NO,
-    input is_isa_raise_intr,
-    input [2:0]raddr,
-    input [2:0]waddr,
-    input [31:0]mcycle,
-    input [31:0]mcycleh,
-    input [31:0]wdata,
-    output [31:0]rdata,
-    output [31:0]mtvec,
-    output [31:0]mepc
-);
-    reg [31:0] csr [6:0];
-    assign rdata = (raddr == 3'd4) ? mcycle : (raddr == 3'd5) ? mcycleh : 
-                   (raddr == 3'd6) ? 32'h79737978: (raddr == 3'd7) ? 32'h17e8a72: csr[raddr];
-    assign mtvec = csr[3];
-    assign mepc = csr[2];
-    always@(posedge clock)begin
-        if(reset)begin
-            csr[0] <= 0;
-            csr[1] <= 0;
-            csr[2] <= 0;
-            csr[3] <= 0;
-            csr[4] <= 0;
-            csr[5] <= 0;
-            csr[6] <= 0;
-        end
-        else if(wen)begin
-            csr[waddr] <= wdata;
-        end
-        else if(is_isa_raise_intr)begin
-            csr[0] <= {{28{1'b0}}, NO};
-            csr[2] <= epc;
-        end
-    end
-endmodule
-module ysyx_25070194_mcycle(
-    input clock,
-    input reset,
-    input [31:0]p,
-    output reg [31:0]q
-);
-    always@(posedge clock)begin
-        if(reset)begin
-            q<=0;
-        end
-        else begin
-            q<=p;
-        end
-    end
-endmodule
-module ysyx_25070194_mcycleh(
-    input reset,
-    input clock,
-    input [31:0]low,
-    input [31:0]p,
-    output reg [31:0]q
-);
-    always@(posedge clock)begin
-        if(reset) q <= 0;
-        else if(low==32'hffffffff)begin
-            q <= p;
-        end
-    end
-endmodule 
-/* verilator lint_on DECLFILENAME */
