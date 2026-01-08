@@ -88,7 +88,7 @@ module tb;
 
     // -------------------------- 5. LSU响应逻辑（适配8位内存，支持字节/半字/字操作） --------------------------
 wire [31:0] addr_lsu;
-assign addr_lsu = io_lsu_addr - MEM_BASE;  // 内存访问仍用>>2，串口访问会跳过此逻辑
+assign addr_lsu = {io_lsu_addr[31:2],2'b0} - MEM_BASE;  // 内存访问仍用>>2，串口访问会跳过此逻辑
 // 定义串口地址（匹配C代码中的SERIAL_PORT）
 localparam SERIAL_PORT = 32'h10000000;
 
