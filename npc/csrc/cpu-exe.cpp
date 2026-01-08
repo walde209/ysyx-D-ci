@@ -4,7 +4,7 @@
 //#include <nvboard.h> 
 #include "VysyxSoCFull.h"  
 #include "verilated.h"
- //#include "verilated_vcd_c.h" // 可选，如果要导出vcd则需要加上
+ #include "verilated_fst_c.h" // 可选，如果要导出fst则需要加上
 static uint64_t count = 0;//计算周期数用的，可删
 static FILE *itrace_fp = NULL;
 
@@ -44,8 +44,8 @@ extern "C" void flash_read(int32_t addr, int32_t *data) {
 
     //rintf("[flash_read] addr = 0x%08x, data = 0x%08x\n", addr, *data);
 }
-// void disassemble(char *str,int size,uint64_t pc,uint8_t *code,int nbyte);
-// void init_disasm();
+void disassemble(char *str,int size,uint64_t pc,uint8_t *code,int nbyte);
+void init_disasm();
 // void log_mem_access(Vtop* top) {
 //     if (top->do_memread) {
 //         fprintf(itrace_fp, "[MEM-READ ] addr=0x%08x data=0x%08x\n",
@@ -82,9 +82,14 @@ void scan_registers(){
     }
     //printf("a0\t\t0x%08x\n",top->debug_a0);
 }
-void single_step(VysyxSoCFull* top,VerilatedContext* contextp){//,VerilatedVcdC* tfp){
-    top->clock = 0;top->eval();contextp->timeInc(1);//tfp->dump(contextp->time());
-    top->clock = 1;top->eval();contextp->timeInc(1);//tfp->dump(contextp->time());
+// void single_step(VysyxSoCFull* top,VerilatedContext* contextp,VerilatedFstC* tfp,uint32_t PC){
+//     top->clock = 0;top->eval();contextp->timeInc(1);if(PC>= 0x80000000){tfp->dump(contextp->time());};
+//     top->clock = 1;top->eval();contextp->timeInc(1);if(PC>= 0x80000000){tfp->dump(contextp->time());};
+//     count++;
+// } 
+void single_step(VysyxSoCFull* top,VerilatedContext* contextp){
+    top->clock = 0;top->eval();contextp->timeInc(1);
+    top->clock = 1;top->eval();contextp->timeInc(1);
     count++;
 } 
 
@@ -104,24 +109,25 @@ void check_trap(VysyxSoCFull* top) {
 char cmd_buf[128];
 int main(int argc, char** argv, char** env) {
     const char* image_path = argv[1];
+    unsigned int last_pc=0;
     flash_init(image_path);
     printf("argc = %d\n", argc);
     for (int i = 0; i < argc; i++) {
         printf("argv[%d] = %s\n", i, argv[i]);
     }
-   // printf("MAINARGS = %s\n",MAINARGS);
-    // init_disasm();
-    //itrace_fp = fopen("/home/huang/ysyx-workbench/am-kernels/tests/cpu-tests/build/npc-log.txt", "w");
-    //printf("itrace_fp = %p\n", (void *)itrace_fp); 
-    //assert(itrace_fp);
+//    printf("MAINARGS = %s\n",MAINARGS);
+    init_disasm();
+    itrace_fp = fopen("/home/cosin/Desktop/aa/ysyx-D-ci/npc/npc-log.txt", "w");
+    printf("itrace_fp = %p\n", (void *)itrace_fp); 
+    assert(itrace_fp);
     VerilatedContext* contextp = new VerilatedContext;
     contextp->commandArgs(argc, argv);
     VysyxSoCFull* top = new VysyxSoCFull{contextp};//创建一个Vtop实例，Vtop是你的顶层Verilog模块的C++表示。contextp是Verilator上下文对象，用于管理仿真。   
     
-    // VerilatedVcdC* tfp = new VerilatedVcdC; //这是用于波形生成的对象
+    // VerilatedFstC* tfp = new VerilatedFstC; //这是用于波形生成的对象
     // contextp->traceEverOn(true);
     // top->trace(tfp, 99); //这句代码和上面那句代码用于启用波形跟踪和连接波形对象。
-    // tfp->open("wave.vcd"); //这是用于打开波形文件的代码
+    // tfp->open("wavesoc.Fst"); //这是用于打开波形文件的代码
 
 
     // reset
@@ -186,43 +192,6 @@ int main(int argc, char** argv, char** env) {
     //         check_trap(top);
     //     }else if(strcmp(cmd_buf,"c") == 0)
     //     {
-    //         while(!simulation_finished){
-
-    //             // char disasm_output [128];
-    //             // uint32_t inst = top->inst;
-    //             // uint8_t code[4];
-    //             // code[0] = inst & 0xff;
-    //             // code[1] = (inst >> 8) & 0xff;
-    //             // code[2] = (inst >> 16) & 0xff;
-    //             // code[3] = (inst >> 24) & 0xff;
-    //             // disassemble(disasm_output,sizeof(disasm_output),top->PC,code,4);
-    //             // printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
-    //             // fprintf(itrace_fp, "0x%08x: 0x%08x %s\n", top->PC, top->inst, disasm_output);
-    //             // fflush(itrace_fp);
-    //             //log_mem_access(top);
-    //             single_step(top,contextp);//,tfp);
-    //         }
-    //         check_trap(top);
-    //     }else if(strcmp(cmd_buf,"info r") == 0) {
-    //         //printf("PC = 0x%08x\n", top->PC);
-    //         scan_registers();            
-    //     }else if (strncmp(cmd_buf,"x",1)==0)
-    //     {
-    //         int N =0;
-    //         uint32_t addr =0;
-    //         if(sscanf(cmd_buf,"x %d %x",&N,&addr) == 2) {
-    //             for(int i =0;i<N;i++){
-    //                 uint32_t cur_addr = addr + i*4;
-    //                 uint32_t data = pmem_read(cur_addr);
-    //                 printf("0x%08x: 0x%08x\n", cur_addr, data);
-    //             }
-    //         }else {
-    //             printf("Usage: x N ADDR\n");
-    //         }
-    //     } else {
-    //         printf("Unknown command: %s\n", cmd_buf);
-    //     }
-    // }
             while(!simulation_finished){
 
                 // char disasm_output [128];
@@ -233,15 +202,38 @@ int main(int argc, char** argv, char** env) {
                 // code[2] = (inst >> 16) & 0xff;
                 // code[3] = (inst >> 24) & 0xff;
                 // disassemble(disasm_output,sizeof(disasm_output),top->PC,code,4);
-                // printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
+                // //printf("0x%08x: 0x%08x %s\n",top->PC,top->inst,disasm_output);
+                // if((last_pc!=top->PC) &&(top->PC>= 0x80000000)){
                 // fprintf(itrace_fp, "0x%08x: 0x%08x %s\n", top->PC, top->inst, disasm_output);
+                // last_pc=top->PC;
+                // }
                 // fflush(itrace_fp);
-                //log_mem_access(top);
-                single_step(top,contextp);//,tfp);
+                // log_mem_access(top);
+                // single_step(top,contextp,tfp,top->PC);
+                single_step(top,contextp);
             }
-            check_trap(top);
-
-    //fclose(itrace_fp);
+        //     check_trap(top);
+        // }else if(strcmp(cmd_buf,"info r") == 0) {
+        //     //printf("PC = 0x%08x\n", top->PC);
+        //     scan_registers();            
+        // }else if (strncmp(cmd_buf,"x",1)==0)
+        // {
+        //     int N =0;
+        //     uint32_t addr =0;
+        //     if(sscanf(cmd_buf,"x %d %x",&N,&addr) == 2) {
+        //         for(int i =0;i<N;i++){
+        //             uint32_t cur_addr = addr + i*4;
+        //             uint32_t data = pmem_read(cur_addr);
+        //             printf("0x%08x: 0x%08x\n", cur_addr, data);
+        //         }
+        //     }else {
+        //         printf("Usage: x N ADDR\n");
+        //     }
+        // } else {
+        //     printf("Unknown command: %s\n", cmd_buf);
+        // }
+    // }
+    fclose(itrace_fp);
     printf("Total cycles: %llu\n", (unsigned long long)count);//计算周期数用的，可删
     delete top;
     //tfp->close();//这是用于关闭波形文件的代码

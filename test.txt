@@ -1,0 +1,43 @@
+make: Entering directory '/home/cosin/Desktop/aa/ysyx-D-ci/npc'
+riscv64-linux-gnu-objcopy -I binary -O verilog --adjust-vma=0 /home/cosin/Desktop/aa/ysyx-D-ci/am-kernels/benchmarks/microbench/build/microbench-minirv-npc.bin test.hex 
+========== 编译Verilog文件（启用四值仿真）==========
+/home/cosin/Desktop/aa/ysyx-D-ci/npc/ysyx_25080202.v ./testbench/tb.v
+iverilog -g2012 -Wall -Winfloop -DCOSIM_XCHECK   -s tb -o sim.vvp /home/cosin/Desktop/aa/ysyx-D-ci/npc/ysyx_25080202.v ./testbench/tb.v
+编译完成，生成文件：sim.vvp
+========== 执行四值仿真 ==========
+vvp -v -n   sim.vvp
+Compiling VVP ...
+ ... VVP file version 11.0 (stable)
+Compile cleanup...
+ ...      215 functors (net_fun pool=524288 bytes)
+                 47 logic
+                  0 bufif
+                  0 resolv
+                 61 signals
+ ...      157 filters (net_fil pool=524288 bytes)
+ ...     1164 opcodes (49152 bytes)
+ ...      245 nets
+ ...      215 vvp_nets (1048544 bytes)
+ ...        0 arrays (0 words)
+ ...        2 memories
+                  2 logic (16777232 words)
+                  0 real (0 words)
+ ...       12 scopes
+ ... 1.05636 seconds, 278380.0/269952.0/5248.0 KBytes size/rss/shared
+Running ...
+ ...execute EndOfCompile callbacks
+ ...propagate initialization events
+ ...execute StartOfSim callbacks
+ ...run scheduler
+ ...execute Postsim callbacks
+ ... 991.808 seconds, 671600.0/662400.0/4736.0 KBytes size/rss/shared
+Event counts:
+    153594295 time steps (pool=113)
+    392303796 thread schedule events
+    762334098 assign events
+             ...assign(vec4) pool=9362
+             ...assign(vec8) pool=204
+             ...assign(real) pool=256
+             ...assign(word) pool=128
+             ...assign(word/r) pool=204
+    396889309 other events (pool=4096)

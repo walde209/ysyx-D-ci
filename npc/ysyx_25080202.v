@@ -542,7 +542,7 @@ end
                 rf[0]<= 32'b0;
                 rf[1]<= 32'b0;
                 rf[2]<= 32'b0;
-                rf[3]<= 32'b0;
+                rf[3]<= 32'b0;//32'h30000f18;//
                 rf[4]<= 32'b0;
                 rf[5]<= 32'b0;
                 rf[6]<= 32'b0;
@@ -715,6 +715,10 @@ module ysyx_25080202(
     output io_lsu_reqValid,
     output [31:0] io_lsu_addr,
     output io_lsu_wen,
+`ifndef ITRACE_OFF
+output [31:0] PC,
+output [31:0] inst,
+`endif
     output [31:0] io_lsu_wdata,
     output [3:0]  io_lsu_wmask,
     output [1:0]  io_lsu_size
@@ -747,7 +751,6 @@ module ysyx_25080202(
     reg        ifu_respValid;
     wire        ifu_valid;
     wire        pc_valid;
-    wire [31:0] PC;
     wire        cpu_en;
     // ===== LSU ↔ Memory =====
    // wire [31:0] lsu_addr;
@@ -766,8 +769,10 @@ module ysyx_25080202(
     wire [31:0] next_pc;
     wire [31:0] reg_wdata;
     wire [31:0] csr_wdata_out;
+`ifdef ITRACE_OFF
+    wire [31:0] PC;
     wire [31:0] inst;
-
+`endif
    // wire ifu_wen;
 
     // ===============================

@@ -1,3 +1,4 @@
+`define ITRACE_OFF
 `timescale 1ns/1ps
 module tb;
   // -------------------------- 1. 时钟/复位（严格匹配CPU顶层） --------------------------
@@ -16,7 +17,7 @@ module tb;
 
   // -------------------------- 2. 合并内存定义（8位宽，IFU/LSU共享） --------------------------
   localparam MEM_BASE     = 32'h30000000;  // 统一内存基址
-  localparam MEM_SIZE_B   = 1024*1024;         
+  localparam MEM_SIZE_B   = 1024*1024*16;         
   reg [7:0]  mem [0:MEM_SIZE_B-1];         // 8位宽字节数组（物理内存本质）
 
   // 加载程序+初始化内存（合并为单个数组）
@@ -74,8 +75,8 @@ module tb;
           io_ifu_rdata[23:16] <= mem[addr_ifu + 2];
           io_ifu_rdata[31:24] <= mem[addr_ifu + 3];
           io_ifu_respValid    <= 1'b1;
-        //   $display("[IFU][%0t] Req: addr=0x%08h → Rsp: data=0x%08h", 
-        //            $time, io_ifu_addr, {mem[addr_ifu+3], mem[addr_ifu+2], mem[addr_ifu+1], mem[addr_ifu]});
+          // $display("[IFU][%0t] Req: addr=0x%08h → Rsp: data=0x%08h", 
+          //          $time, io_ifu_addr, {mem[addr_ifu+3], mem[addr_ifu+2], mem[addr_ifu+1], mem[addr_ifu]});
         end else begin
           io_ifu_rdata     <= 32'hdeadbeef;      // 地址越界返回错误值
           io_ifu_respValid <= 1'b1;
@@ -87,7 +88,7 @@ module tb;
 
     // -------------------------- 5. LSU响应逻辑（适配8位内存，支持字节/半字/字操作） --------------------------
 wire [31:0] addr_lsu;
-assign addr_lsu = (io_lsu_addr>>2)<<2 - MEM_BASE;  // 内存访问仍用>>2，串口访问会跳过此逻辑
+assign addr_lsu = io_lsu_addr - MEM_BASE;  // 内存访问仍用>>2，串口访问会跳过此逻辑
 // 定义串口地址（匹配C代码中的SERIAL_PORT）
 localparam SERIAL_PORT = 32'h10000000;
 
@@ -107,9 +108,9 @@ always @(posedge clock) begin
       end
       // 新增：串口状态寄存器（SERIAL_PORT+5）
       else if (io_lsu_addr == SERIAL_PORT + 32'd5 && !io_lsu_wen) begin
-        io_lsu_rdata <= 32'h00000020;   // 返回状态：发送空闲
+        io_lsu_rdata <= 32'h20202020;   // 返回状态：发送空闲
         io_lsu_respValid <= 1'b1;
-        $display("[UART][%0t] 读取状态寄存器: 0x%08h", $time, 32'h00000020);
+        // $display("[UART][%0t] 读取状态寄存器: 0x%08h", $time, 32'h00000020);
       end
       // 其他串口寄存器（简单响应）
       else if (((io_lsu_addr == SERIAL_PORT+32'd3 && io_lsu_wen) || 
@@ -124,8 +125,8 @@ always @(posedge clock) begin
           if (io_lsu_wmask[1]) mem[addr_lsu + 1] <= io_lsu_wdata[15:8];
           if (io_lsu_wmask[2]) mem[addr_lsu + 2] <= io_lsu_wdata[23:16];
           if (io_lsu_wmask[3]) mem[addr_lsu + 3] <= io_lsu_wdata[31:24];
-          // $display("[LSU][%0t] Write: addr=0x%08h wdata=0x%08h wmask=0x%1h size=%02b mem[0x%08h]=0x%02h", 
-          //          $time, io_lsu_addr, io_lsu_wdata, io_lsu_wmask, io_lsu_size , addr_lsu, mem[addr_lsu]);
+          // $display("[LSU][%0t] Write: addr=0x%08h wdata=0x%08h wmask=0x%1h size=%02b pc:0x%08h " ,
+                  //  $time, io_lsu_addr, io_lsu_wdata, io_lsu_wmask, io_lsu_size , addr_lsu, io_ifu_addr);
           io_lsu_respValid <= 1'b1;  // 写操作响应
         end
         // 读操作（lb/lh/lw/lbu/lhu）：从8位内存拼接数据
@@ -136,8 +137,8 @@ always @(posedge clock) begin
           io_lsu_rdata[23:16] <= mem[addr_lsu + 2];
           io_lsu_rdata[31:24] <= mem[addr_lsu + 3];
           io_lsu_respValid    <= 1'b1;
-          // $display("[LSU][%0t] Read: addr=0x%08h rdata=0x%08h size=%02b", 
-          //          $time, io_lsu_addr, {mem[addr_lsu+3], mem[addr_lsu+2], mem[addr_lsu+1], mem[addr_lsu]}, io_lsu_size);
+          // $display("[LSU][%0t] Read: addr=0x%08h rdata=0x%08h size=%02b pc:0x%08h ", 
+                  //  $time, io_lsu_addr, {mem[addr_lsu+3], mem[addr_lsu+2], mem[addr_lsu+1], mem[addr_lsu]}, io_lsu_size, io_ifu_addr);
         end
       end else begin
           io_lsu_rdata     <= 32'hdeadbeef;  // 地址越界

@@ -12,7 +12,9 @@ INC_PATH_VER += ../ysyxSoC/perip/uart16550/rtl ../ysyxSoC/perip/spi/rtl
 INCFLAGS_VER += $(foreach v,$(INC_PATH_VER),-I$(v))
 
 #CXXFLAGS += $(shell llvm-config --cxxflags) -fPIE
-CXXFLAGS += $(INCFLAGS) #-DTRACE #I/usr/lib/llvm-14/include -std=c++14   -fno-exceptions -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+# CXXFLAGS += $(INCFLAGS) #-DTRACE #I/usr/lib/llvm-14/include -std=c++14   -fno-exceptions -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+CXXFLAGS += $(INCFLAGS) -I $(YSYX_HOME)/nemu/tools/capstone/repo/include -DTOP_NAME="\"V$(TOPNAME)\""
+LDFLAGS += -L $(YSYX_HOME)/nemu/tools/capstone/repo/ -lcapstone -lSDL2 -lSDL2_image
 
 TOP_NAME = ysyxSoCFull#-------------------top_name
 EX_CMD := $(addprefix ./obj_dir/V, $(TOP_NAME))
@@ -27,7 +29,8 @@ sim:
 	
 # 	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
 	@echo $(VSRCS)
-	verilator --trace -Wno-fatal --cc --exe --build --autoflush $(INCFLAGS_VER) --timescale "1ns/1ns" --no-timing --Wno-WIDTHEXPAND\
+	echo $(CSRCS)
+	verilator --trace -Wno-fatal --cc --exe --trace-fst --build --autoflush $(INCFLAGS_VER) --timescale "1ns/1ns" --no-timing --Wno-WIDTHEXPAND\
     --top-module $(TOP_NAME) \
     $(CSRCS) $(VSRCS) \
 	$(LIB) $(FLAGS)
